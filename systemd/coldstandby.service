@@ -1,0 +1,20 @@
+[Unit]
+Description=Cold-standby boot-mode controller
+Documentation=https://github.com/haraldroelle/pve-coldstandby
+# pve-guests.service is masked permanently on this node -- guest starts
+# only happen via this controller's own start logic (Emergency mode).
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -m coldstandby.main
+RemainAfterExit=yes
+WorkingDirectory=/opt/coldstandby
+# All output goes to the journal; read a run with `journalctl -u coldstandby`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=coldstandby
+
+[Install]
+WantedBy=multi-user.target

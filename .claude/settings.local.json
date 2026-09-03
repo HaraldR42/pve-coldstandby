@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m pytest -q)",
+      "Bash(.venv/bin/python -m coldstandby.main --config /private/tmp/claude-501/-Users-roelle-git-pve-coldstandby/c0884a47-244e-4687-a32c-b239633c1747/scratchpad/cfg.json --dry-run -v)",
+      "Bash(git add *)"
+    ]
+  }
+}
