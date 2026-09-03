@@ -6,10 +6,15 @@ in a dongle. By design this selector only ever requests Lab -- Emergency is
 never reachable over the network -- and it self-consumes, so a forgotten
 flag can't re-trigger Lab on the following unattended boot.
 
-Backed by a Home Assistant ``input_select`` over the REST API. Nothing
-about it is special -- it's just one module in this package; see the
-package docstring for how to add another. Leaving ``ha_base_url`` /
-``ha_token`` empty drops this selector entirely.
+It also implements `publish_result`: after every resolution it writes the
+outcome to a Home Assistant entity (``ha_status_entity``) so "what did the
+last boot decide, and why" is visible without reading the journal. That is
+a one-way status readout, not a control surface.
+
+Backed by a Home Assistant ``input_select`` (and a status entity) over the
+REST API. Nothing about it is special -- it's just one module in this
+package; see the package docstring for how to add another. Leaving
+``ha_base_url`` / ``ha_token`` empty drops this selector entirely.
 
 Deliberately stdlib-only (urllib) so this has zero third-party
 dependencies to keep patched.
@@ -22,7 +27,7 @@ import urllib.request
 from typing import Optional
 
 from ..config import Config
-from ..mode import Mode, ModeSelector, ModeSelectorUnavailable
+from ..mode import Mode, ModeDecision, ModeSelector, ModeSelectorUnavailable
 
 
 class HomeAssistantSelector(ModeSelector):
@@ -41,6 +46,27 @@ class HomeAssistantSelector(ModeSelector):
             {
                 "entity_id": self._cfg.ha_lab_select_entity,
                 "option": self._cfg.ha_replication_option,
+            },
+        )
+
+    def publish_result(self, decision: ModeDecision) -> None:
+        entity = self._cfg.ha_status_entity
+        if not entity:
+            return
+        payload = decision.as_dict()
+        self._request(
+            "POST",
+            f"/api/states/{entity}",
+            {
+                "state": payload["mode"],
+                "attributes": {
+                    "friendly_name": "Cold-standby last boot",
+                    "icon": "mdi:server",
+                    "decided_by": payload["decided_by"],
+                    "host": payload["host"],
+                    "resolved_at": payload["resolved_at"],
+                    "selectors": payload["selectors"],
+                },
             },
         )
 

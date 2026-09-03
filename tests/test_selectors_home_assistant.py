@@ -6,7 +6,12 @@ import pytest
 
 from coldstandby.config import Config
 from coldstandby.selectors.home_assistant import HomeAssistantSelector
-from coldstandby.mode import Mode, ModeSelector, ModeSelectorUnavailable
+from coldstandby.mode import (
+    Mode,
+    ModeDecision,
+    ModeSelector,
+    ModeSelectorUnavailable,
+)
 
 
 def _cfg(**kw) -> Config:
@@ -64,6 +69,50 @@ def test_clear_posts_replication_option(monkeypatch):
         "entity_id": "input_select.coldstandby_mode",
         "option": "replication",
     }
+
+
+def _decision():
+    return ModeDecision(
+        mode=Mode.REPLICATION,
+        decided_by="DongleSelector",
+        selector_requests={"DongleSelector": "replication", "HomeAssistantSelector": "not consulted"},
+    )
+
+
+def test_publish_result_writes_status_entity(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data)
+        return _resp({})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    HomeAssistantSelector(_cfg()).publish_result(_decision())
+
+    assert seen["url"].endswith("/api/states/sensor.coldstandby_boot")
+    assert seen["body"]["state"] == "replication"
+    attrs = seen["body"]["attributes"]
+    assert attrs["decided_by"] == "DongleSelector"
+    assert attrs["selectors"]["HomeAssistantSelector"] == "not consulted"
+    assert "resolved_at" in attrs and "host" in attrs
+
+
+def test_publish_result_skipped_when_no_entity(monkeypatch):
+    def no_calls(*a, **k):
+        raise AssertionError("should not touch the network")
+
+    monkeypatch.setattr("urllib.request.urlopen", no_calls)
+    HomeAssistantSelector(_cfg(ha_status_entity="")).publish_result(_decision())
+
+
+def test_publish_result_network_error_raises(monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: (_ for _ in ()).throw(urllib.error.URLError("x")),
+    )
+    with pytest.raises(ModeSelectorUnavailable):
+        HomeAssistantSelector(_cfg()).publish_result(_decision())
 
 
 def test_network_error_becomes_selector_unavailable(monkeypatch):

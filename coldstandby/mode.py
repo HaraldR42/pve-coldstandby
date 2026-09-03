@@ -17,12 +17,21 @@ only overwrites this node's own scratch copies and then powers off -- it
 never reaches `main`, the cluster, the read-only backup archives, or
 anything running elsewhere, and it starts no guests. That bounded blast
 radius is what makes it the safe default.
+
+Once the mode is settled, `determine_mode` hands a `ModeDecision` to
+*every* selector's `publish_result` -- not just the one that decided -- so
+any of them can surface the outcome (a Home Assistant sensor, an MQTT
+topic, a status LED). Publishing is best-effort and never changes the
+decision.
 """
 from __future__ import annotations
 
 import abc
+import dataclasses
+import datetime as dt
 import enum
 import logging
+import socket
 from typing import Sequence
 
 log = logging.getLogger(__name__)
@@ -34,12 +43,48 @@ class Mode(enum.Enum):
     REPLICATION = "replication"
 
 
+# What a selector's mode_requested() amounted to, for the status report.
+REQUEST_UNAVAILABLE = "unavailable"
+REQUEST_NONE = "no preference"
+REQUEST_NOT_CONSULTED = "not consulted"  # a lower-priority selector, after the decision
+
+
 class ModeSelectorUnavailable(Exception):
     """A selector could not be consulted (unreachable, unusable answer, …).
 
     Callers MUST treat this as "this selector has no say right now", never
     as something to retry-and-guess around.
     """
+
+
+@dataclasses.dataclass(frozen=True)
+class ModeDecision:
+    """The outcome of resolution, handed to every selector afterwards."""
+
+    mode: Mode
+    # Class name of the selector that decided, or None if nothing had a
+    # preference and we fell through to the default.
+    decided_by: str | None
+    # Every active selector -> what it contributed: a mode value, or one of
+    # the REQUEST_* constants above.
+    selector_requests: dict[str, str]
+    resolved_at: dt.datetime = dataclasses.field(
+        default_factory=lambda: dt.datetime.now(dt.timezone.utc)
+    )
+    host: str = dataclasses.field(default_factory=socket.gethostname)
+
+    def summary(self) -> str:
+        by = self.decided_by or "no selector; default"
+        return f"{self.mode.value} ({by})"
+
+    def as_dict(self) -> dict:
+        return {
+            "mode": self.mode.value,
+            "decided_by": self.decided_by,
+            "host": self.host,
+            "resolved_at": self.resolved_at.isoformat(timespec="seconds"),
+            "selectors": dict(self.selector_requests),
+        }
 
 
 class ModeSelector(abc.ABC):
@@ -59,19 +104,41 @@ class ModeSelector(abc.ABC):
         May raise `ModeSelectorUnavailable`; by then the mode for this boot
         is already decided, so the caller only logs it."""
 
+    def publish_result(self, decision: "ModeDecision") -> None:
+        """Surface the resolved decision somewhere visible. Called once on
+        every active selector -- including ones that had no opinion or were
+        unavailable -- after the mode is settled.
 
-def determine_mode(selectors: Sequence[ModeSelector]) -> Mode:
-    """First selector (in priority order) with an opinion wins."""
+        Best-effort: the mode is already decided, so any exception here is
+        logged and swallowed by the caller. Default is a no-op (a USB stick
+        has nothing to report to)."""
+
+
+def determine_mode(selectors: Sequence[ModeSelector], *, publish: bool = True) -> Mode:
+    """First selector (in priority order) with an opinion wins; then the
+    decision is published to all of them (unless ``publish`` is False, e.g.
+    for a dry run -- a dry run must not clobber the real last-boot status)."""
+    decided: Mode | None = None
+    decided_by: str | None = None
+    requests: dict[str, str] = {}
+
     for selector in selectors:
         name = type(selector).__name__
+
+        if decided is not None:
+            requests[name] = REQUEST_NOT_CONSULTED
+            continue
+
         try:
             requested = selector.mode_requested()
         except ModeSelectorUnavailable as exc:
             log.warning("%s unavailable (%s) -- skipping.", name, exc)
+            requests[name] = REQUEST_UNAVAILABLE
             continue
 
         if requested is None:
             log.debug("%s has no preference.", name)
+            requests[name] = REQUEST_NONE
             continue
 
         log.info("%s selects %s mode.", name, requested.value)
@@ -83,7 +150,31 @@ def determine_mode(selectors: Sequence[ModeSelector]) -> Mode:
                 "reset it by hand.",
                 name, exc,
             )
-        return requested
+        decided, decided_by = requested, name
+        requests[name] = requested.value
 
-    log.info("No selector expressed a preference -> Replication.")
-    return Mode.REPLICATION
+    if decided is None:
+        log.info("No selector expressed a preference -> Replication.")
+
+    decision = ModeDecision(
+        mode=decided or Mode.REPLICATION,
+        decided_by=decided_by,
+        selector_requests=requests,
+    )
+    log.info("Boot mode decided: %s", decision.summary())
+    if publish:
+        _publish(selectors, decision)
+    else:
+        log.debug("Dry run -- not publishing the decision.")
+    return decision.mode
+
+
+def _publish(selectors: Sequence[ModeSelector], decision: ModeDecision) -> None:
+    for selector in selectors:
+        try:
+            selector.publish_result(decision)
+        except Exception as exc:  # noqa: BLE001 -- a status sink must never break the boot
+            log.warning(
+                "%s: could not publish the boot decision (%s).",
+                type(selector).__name__, exc,
+            )

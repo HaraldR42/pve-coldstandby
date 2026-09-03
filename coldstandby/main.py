@@ -7,9 +7,10 @@ controller's own ordering logic in Emergency mode.
 
 Everything this controller does is logged to the systemd journal (terse
 format -- journald supplies the timestamp and the `coldstandby`
-identifier). Inspect a run with `journalctl -u coldstandby`. The optional
-online selector is only consulted to resolve the boot mode; nothing
-reports to it.
+identifier). Inspect a run with `journalctl -u coldstandby`. The one thing
+that also goes elsewhere is the resolved boot decision: after resolution
+it is handed to every mode selector's `publish_result`, and the Home
+Assistant selector writes it to a status entity.
 """
 from __future__ import annotations
 
@@ -142,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         mode = Mode(args.force_mode)
         log.warning("Mode resolution skipped -- forced to %s.", mode.value)
     else:
-        mode = determine_mode(build_selectors(cfg))
+        mode = determine_mode(build_selectors(cfg), publish=not args.dry_run)
 
     log.info("Boot mode: %s%s", mode.value, " (dry run)" if args.dry_run else "")
 

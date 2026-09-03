@@ -31,6 +31,10 @@ class Config:
     ha_lab_option: str = "lab"
     ha_replication_option: str = "replication"
     ha_timeout_seconds: float = 5.0
+    # Entity the resolved boot decision is written to after resolution
+    # (state = the mode, attributes = who decided, host, timestamp, every
+    # selector's contribution). Set "" to publish nothing.
+    ha_status_entity: str = "sensor.coldstandby_boot"
 
     # --- Dongle mode selection ---------------------------------------
     # A dongle names its mode in the fs label: "<prefix>-EMERGENCY",

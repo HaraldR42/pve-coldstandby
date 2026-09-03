@@ -131,7 +131,10 @@ Every boot runs in one of three modes. Which one is decided by asking a
 priority-ordered list of **mode selectors** (`ModeSelector` in `mode.py`)
 in turn — the first that expresses a preference wins; if none do, the
 answer is Replication. A selector that can't be consulted (unreachable,
-garbled answer) is skipped, not fatal.
+garbled answer) is skipped, not fatal. Once the mode is settled the
+outcome is handed back to *every* selector (`publish_result`) — so it can
+be surfaced somewhere (the Home Assistant selector writes it to a status
+entity); a dry run skips this.
 
 Two selectors ship:
 
@@ -213,23 +216,29 @@ job is healthy again.
 ## What talks to what
 
 - **Mode selectors** are the pluggable mechanisms for choosing the boot
-  mode. `mode.py` defines the interface (`ModeSelector` — one method,
-  `mode_requested() -> Mode | None` — plus `ModeSelectorUnavailable`) and
-  `determine_mode`; the `selectors/` package holds the implementations and
-  `build_selectors`, which fixes their priority order.
+  mode. `mode.py` defines the interface — `ModeSelector`, with
+  `mode_requested() -> Mode | None`, `clear()` (consume a one-shot
+  request), and `publish_result(decision)` (report the outcome) — plus
+  `ModeSelectorUnavailable` and `determine_mode`. The `selectors/` package
+  holds the implementations and `build_selectors`, which fixes their
+  priority order.
 - **The dongle** (`DongleSelector`) is the manual override: any mode,
   decided from local hardware only, first in the list so it beats
   everything. A Lab/Emergency dongle consumes nothing — pull it out and
-  the override is gone. Only a valid marker token counts.
+  the override is gone. Only a valid marker token counts. `publish_result`
+  is a no-op — a USB stick has nothing to report to.
 - **The online selector** (`HomeAssistantSelector`) is an optional
   convenience for one thing: asking that the *next* boot be Lab, from your
   phone, without walking over with a dongle. It requests Lab or nothing —
-  never Emergency, never over the network — self-resets once consumed, and
-  is *not* a status sink or dashboard (nothing reports to it). Not
-  configured or unreachable → no preference. It happens to speak to a Home
-  Assistant `input_select`; any other switch (MQTT, a REST endpoint, a
-  flag file on an always-on host) is a new module in `selectors/`.
-  Nothing about failover depends on it.
+  never Emergency, never over the network — and self-resets once consumed.
+  It also implements `publish_result`: after every resolution it writes
+  the decision (mode, which selector decided, host, timestamp, and what
+  each selector contributed) to `ha_status_entity` — a one-way status
+  readout, not a control surface. Not configured or unreachable → no
+  preference, and any publish failure is logged and ignored. It speaks to
+  a Home Assistant `input_select` + status entity; any other switch (MQTT,
+  a REST endpoint, a flag file on an always-on host) is a new module in
+  `selectors/`. Nothing about failover depends on it.
 - **Logging** is the systemd journal, like any other Proxmox service:
   `journalctl -u coldstandby`. `qmrestore` / `qm` run without output
   capture so their native progress lands in the journal too. A failed run
@@ -285,7 +294,7 @@ out of scope by design (VMs only).
 ```
 coldstandby/        the package
   config.py         JSON config + validation
-  mode.py           Mode enum, ModeSelector interface, determine_mode()
+  mode.py           Mode enum, ModeSelector/ModeDecision, determine_mode()
   selectors/        the pluggable mode selectors — add new ones here
     __init__.py     build_selectors() — the priority-ordered list
     dongle.py       DongleSelector — label + marker-token USB stick
@@ -310,8 +319,10 @@ tests/
 2. *(optional, for the online lab selector)* The implementation wired in
    uses Home Assistant: create `input_select.coldstandby_mode` with
    options `replication` and `lab`, default `replication`, and generate a
-   long-lived access token for `ha_token`. Any other switch works via a
-   new module in `coldstandby/selectors/`.
+   long-lived access token for `ha_token`. The boot decision is published
+   to `ha_status_entity` (`sensor.coldstandby_boot` by default — HA
+   creates it on first write; set `""` to publish nothing). Any other
+   switch works via a new module in `coldstandby/selectors/`.
 3. Prepare a dongle per mode you want to be able to force: format a small
    USB stick, label its filesystem `COLDSTANDBY-EMERGENCY` (or `-LAB` /
    `-REPLICATION`) with `fatlabel` / `e2label`, and put the same secret as

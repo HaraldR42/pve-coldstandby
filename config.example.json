@@ -2,6 +2,7 @@
   "ha_base_url": "http://homeassistant.roelle.home:8123",
   "ha_token": "REPLACE_WITH_A_LONG_LIVED_ACCESS_TOKEN",
   "ha_lab_select_entity": "input_select.coldstandby_mode",
+  "ha_status_entity": "sensor.coldstandby_boot",
 
   "dongle_marker_token": "REPLACE_WITH_A_RANDOM_SECRET_STRING",
   "dongle_label_prefix": "COLDSTANDBY",

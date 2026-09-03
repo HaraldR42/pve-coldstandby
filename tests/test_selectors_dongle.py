@@ -82,6 +82,14 @@ def test_clear_is_a_noop():
     _sel().clear()  # stateless -- must not raise
 
 
+def test_publish_result_is_a_noop():
+    from coldstandby.mode import Mode, ModeDecision
+
+    _sel().publish_result(
+        ModeDecision(mode=Mode.REPLICATION, decided_by=None, selector_requests={})
+    )  # a USB stick has nothing to report to -- must not raise
+
+
 def _fake_mount_ok():
     return lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr="")
 

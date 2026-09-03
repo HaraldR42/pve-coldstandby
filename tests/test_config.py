@@ -17,6 +17,7 @@ def test_load_minimal(tmp_path):
     assert cfg.standby_tag == "standby"
     assert cfg.shutdown_after_replication is True
     assert cfg.online_selector_enabled is False  # no ha_* -> disabled
+    assert cfg.ha_status_entity == "sensor.coldstandby_boot"
 
 
 def test_online_selector_enabled_when_both_set(tmp_path):
