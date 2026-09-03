@@ -1,6 +1,6 @@
 # pve-coldstandby
 
-Boot-mode controller for the backup Proxmox VE node. On every boot it
+Boot-mode controller for a cold standby backup Proxmox VE node. On every boot it
 resolves which of three modes to run in, then does that mode's work and
 gets out of the way.
 
