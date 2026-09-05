@@ -41,7 +41,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Log intended actions without executing them (never shuts down).",
+        help="Log intended actions without executing them (never shuts down). "
+        "Also skips the selectors' writes (consuming the request, publishing "
+        "the result).",
+    )
+    parser.add_argument(
+        "--exercise-selectors",
+        action="store_true",
+        help="Only with --dry-run: still let the mode selectors do their real "
+        "writes -- consume the next-boot request and publish the result / HA "
+        "discovery -- so the MQTT/HA wiring can be tested. Guest restore, "
+        "starts and shutdown stay a preview. NOTE: this consumes a pending "
+        "Lab request just like a real boot would.",
     )
     parser.add_argument(
         "--no-shutdown",
@@ -125,7 +136,10 @@ def _enforce_pve_guests_masked(dry_run: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.exercise_selectors and not args.dry_run:
+        parser.error("--exercise-selectors only makes sense together with --dry-run")
     _setup_logging(args.verbose)
 
     cfg = Config.load(args.config)
@@ -143,7 +157,16 @@ def main(argv: list[str] | None = None) -> int:
         mode = Mode(args.force_mode)
         log.warning("Mode resolution skipped -- forced to %s.", mode.value)
     else:
-        mode = determine_mode(build_selectors(cfg), dry_run=args.dry_run)
+        # --exercise-selectors: run the selectors for real even under
+        # --dry-run, so their writes (request consumed, result published)
+        # actually happen.
+        selectors_dry_run = args.dry_run and not args.exercise_selectors
+        if args.exercise_selectors:
+            log.warning(
+                "--exercise-selectors: selector writes WILL happen; "
+                "guest work stays a preview."
+            )
+        mode = determine_mode(build_selectors(cfg), dry_run=selectors_dry_run)
 
     log.info("Boot mode: %s%s", mode.value, " (dry run)" if args.dry_run else "")
 

@@ -391,6 +391,12 @@ tests/
    `python3 -m coldstandby.main --config /etc/coldstandby/config.json --dry-run -v`
    (`--force-mode {replication,lab,emergency}` to exercise one path,
    `--no-shutdown` to keep Replication from powering off).
+   - `--dry-run` also skips the selectors' writes (consuming the
+     next-boot request, publishing the result / HA discovery).
+   - `--dry-run --exercise-selectors` runs the selectors for real —
+     including those writes — so you can confirm the MQTT/HA integration
+     end to end while guest restore, starts and shutdown stay a preview.
+     Note it consumes a pending Lab request exactly like a real boot.
 
 ## Manual replication refresh
 
