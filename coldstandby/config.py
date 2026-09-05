@@ -10,21 +10,46 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 DEFAULT_CONFIG_PATH = Path(os.environ.get("COLDSTANDBY_CONFIG", "/etc/coldstandby/config.json"))
 
 
+PROJECT_NAME = "pve-coldstandby"
+
+
 @dataclass
 class Config:
-    # --- Online lab selector (optional) ------------------------------
-    # An online switch whose only job is to push the *next* boot into Lab
-    # mode without a dongle. The reference client
-    # (selectors/home_assistant.py) talks to a Home Assistant input_select.
-    # Leave ha_base_url / ha_token empty
-    # to disable this layer entirely -- resolution then goes dongle ->
-    # Replication.
+    # --- Identity -----------------------------------------------------
+    # Used in MQTT topic paths and Home Assistant device info. Defaults to
+    # the machine's hostname.
+    node_name: str = ""
+
+    # --- Online lab selector: MQTT + Home Assistant (optional) -------
+    # An MQTT-backed switch that pushes the *next* boot into Lab mode
+    # without a dongle, and publishes the boot result. Publishes HA MQTT
+    # device-discovery so a `select` and `last_boot_*` sensors appear on
+    # their own. Requires the `mqtt` extra: pip install pve-coldstandby[mqtt].
+    # This is the online selector wired in by default; an empty mqtt_broker
+    # disables it (resolution then goes dongle -> [REST selector] ->
+    # Replication).
+    mqtt_broker: str = ""
+    mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+    mqtt_tls: bool = False
+    mqtt_tls_ca_cert: str = ""  # path to a CA bundle; empty = system trust store
+    mqtt_timeout_seconds: float = 10.0
+    mqtt_base_topic: str = ""  # default: "pve-coldstandby/<node_name>"
+    mqtt_discovery: bool = True
+    mqtt_discovery_prefix: str = "homeassistant"
+
+    # --- Online lab selector: REST Home Assistant (optional, legacy) -
+    # The original implementation (selectors/home_assistant.py): talks to a
+    # Home Assistant input_select over the REST API. Only used when MQTT is
+    # not configured. Leave ha_base_url / ha_token empty to disable.
     ha_base_url: str = ""
     ha_token: str = ""
     ha_lab_select_entity: str = "input_select.coldstandby_mode"
@@ -126,15 +151,32 @@ class Config:
         if bool(cfg.ha_base_url) != bool(cfg.ha_token):
             raise SystemExit(
                 "ha_base_url and ha_token must be set together (or both left "
-                "empty to disable the online lab selector)."
+                "empty to disable the REST Home Assistant selector)."
             )
 
         return cfg
 
+    # -- identity ---------------------------------------------------------
+
+    @property
+    def node(self) -> str:
+        """This node's name for topics / device info (hostname by default)."""
+        return self.node_name or socket.gethostname()
+
+    # -- online lab selector --------------------------------------------
+
+    @property
+    def mqtt_enabled(self) -> bool:
+        return bool(self.mqtt_broker)
+
     @property
     def online_selector_enabled(self) -> bool:
-        """Whether the optional online lab selector is configured."""
+        """Whether the REST Home Assistant selector is configured."""
         return bool(self.ha_base_url and self.ha_token)
+
+    @property
+    def mqtt_topic_base(self) -> str:
+        return self.mqtt_base_topic or f"{PROJECT_NAME}/{self.node}"
 
     def orphan_vmid_bounds(self) -> tuple[int, int] | None:
         """Parse ``standby_vmid_range`` into an inclusive (low, high) pair,

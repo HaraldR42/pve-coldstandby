@@ -147,14 +147,17 @@ Two selectors ship:
    hardware: nothing online, so it works when the home network is what's
    down. Two different mode dongles at once are refused (no preference —
    falls through).
-2. **Online selector** (`HomeAssistantSelector`, optional). A switch —
-   backed here by a Home Assistant `input_select` — that requests Lab, and
-   nothing else, for the next boot (and self-resets once consumed, so a
-   forgotten flag can't re-trigger Lab). A convenience for choosing Lab
-   from your phone without walking over with a dongle; never involved in
-   an emergency. Not configured, or unreachable → no preference.
+2. **Online selector** (`MqttHaSelector`, optional). A switch — an MQTT
+   `next_boot_mode` topic, surfaced in Home Assistant as a `select` via
+   MQTT discovery — that requests Lab, and nothing else, for the next boot
+   (and self-resets once consumed, so a forgotten flag can't re-trigger
+   Lab). A convenience for choosing Lab from your phone without walking
+   over with a dongle; never involved in an emergency. Not configured, or
+   unreachable → no preference. See *Online selector: MQTT* below. (The
+   original REST `HomeAssistantSelector` still exists and is used instead
+   when MQTT isn't configured.)
 
-Add another mechanism (MQTT, a REST endpoint, a flag file …) by dropping a
+Add another mechanism (a REST endpoint, a flag file …) by dropping a
 `ModeSelector` subclass into the `coldstandby/selectors/` package and
 registering it in `selectors.build_selectors` — see that package's
 docstring.
@@ -227,18 +230,19 @@ job is healthy again.
   everything. A Lab/Emergency dongle consumes nothing — pull it out and
   the override is gone. Only a valid marker token counts. `publish_result`
   is a no-op — a USB stick has nothing to report to.
-- **The online selector** (`HomeAssistantSelector`) is an optional
-  convenience for one thing: asking that the *next* boot be Lab, from your
-  phone, without walking over with a dongle. It requests Lab or nothing —
-  never Emergency, never over the network — and self-resets once consumed.
-  It also implements `publish_result`: after every resolution it writes
-  the decision (mode, which selector decided, host, timestamp, and what
-  each selector contributed) to `ha_status_entity` — a one-way status
-  readout, not a control surface. Not configured or unreachable → no
-  preference, and any publish failure is logged and ignored. It speaks to
-  a Home Assistant `input_select` + status entity; any other switch (MQTT,
-  a REST endpoint, a flag file on an always-on host) is a new module in
-  `selectors/`. Nothing about failover depends on it.
+- **The online selector** (`MqttHaSelector` by default, `HomeAssistantSelector`
+  as the legacy fallback) is an optional convenience for one thing: asking
+  that the *next* boot be Lab, from your phone, without walking over with
+  a dongle. It requests Lab or nothing — never Emergency, never over the
+  network — and self-resets once consumed. It also implements
+  `publish_result`: after every resolution it writes the decision (mode,
+  which selector decided, host, timestamp, and what each selector
+  contributed) somewhere visible — a one-way status readout, not a control
+  surface. Not configured or unreachable → no preference, and any publish
+  failure is logged and ignored. See *Online selector: MQTT* below for the
+  default; any other switch (a REST endpoint, a flag file on an always-on
+  host) is a new module in `selectors/`. Nothing about failover depends on
+  it.
 - **Logging** is the systemd journal, like any other Proxmox service:
   `journalctl -u coldstandby`. `qmrestore` / `qm` run without output
   capture so their native progress lands in the journal too. A failed run
@@ -256,6 +260,46 @@ ordinary boot `startall` a shadow copy of the environment). Restored
 guests also get `onboot: 0` forced. All guest starts happen through this
 controller's Emergency-mode ordering logic — nothing relies on Proxmox's
 native `onboot` / `startall`.
+
+## Online selector: MQTT
+
+`MqttHaSelector` (`selectors/mqtt_ha.py`) is the online selector wired in
+by default. It needs the `mqtt` extra: `pip install pve-coldstandby[mqtt]`
+(the only third-party dependency in the project — everything else stays
+stdlib). Configure `mqtt_broker` to enable it; leaving it empty falls back
+to the legacy REST `HomeAssistantSelector` if `ha_base_url`/`ha_token` are
+set, or to no online selector at all.
+
+**Topics**, all under `<mqtt_base_topic>` (default `pve-coldstandby/<node_name or hostname>`):
+
+| topic | retained | meaning |
+|---|---|---|
+| `next_boot_mode` | yes | the request: `replication` or `lab`. Read on boot, then reset back to `replication` — a one-shot flag, same as the REST selector's. |
+| `last_boot_mode` | yes | the mode that boot resolved to |
+| `last_boot_decided_by` | yes | which selector decided (`default` if none did) |
+| `last_boot_host` | yes | the node name |
+| `last_boot_at` | yes | resolution timestamp, ISO 8601 |
+| `last_boot_selectors` | yes | JSON: every selector → what it contributed |
+
+**Home Assistant discovery.** Before publishing the `last_boot_*` values,
+it publishes one HA MQTT *device discovery* message
+(`<mqtt_discovery_prefix>/device/<node-id>/config`, default prefix
+`homeassistant`) describing a device — named and identified from
+`node_name` — with a `select` component for `next_boot_mode` (options
+`replication`/`lab` only; Emergency is never offered remotely, matching
+the dongle-only design) and one `sensor` per `last_boot_*` value. Set
+`mqtt_discovery: false` to publish only the raw topics.
+
+**Availability is deliberately not wired up.** None of the discovered
+components carry an `availability`/`avty` topic, so Home Assistant always
+shows them as available — including the `select`. That's on purpose: the
+whole point is to be able to pick "lab" for the *next* boot while the
+backup node is off, which is exactly when a node-tied availability topic
+would grey it out.
+
+Auth is optional (`mqtt_username`/`mqtt_password`, `mqtt_tls` +
+`mqtt_tls_ca_cert`); plain anonymous TCP is the default, fine for a
+trusted home LAN segment.
 
 ## Orphan cleanup
 
@@ -281,8 +325,9 @@ Guardrails:
 ## Status
 
 **Implemented:** config loading, mode-selector interface + resolution,
-dongle and Home Assistant selectors, NFS mount, backup discovery + tag
-reading, restore, orphan cleanup, Emergency ordered start, entry point.
+dongle, MQTT+HA-discovery and legacy REST Home Assistant selectors, NFS
+mount, backup discovery + tag reading, restore, orphan cleanup, Emergency
+ordered start, entry point.
 
 **Not done:** verified against real hardware. `vma config` archive reading,
 `qmrestore --force` idempotency across weekly cycles, WOL reachability, and
@@ -298,7 +343,8 @@ coldstandby/        the package
   selectors/        the pluggable mode selectors — add new ones here
     __init__.py     build_selectors() — the priority-ordered list
     dongle.py       DongleSelector — label + marker-token USB stick
-    home_assistant.py  HomeAssistantSelector — the online lab switch
+    mqtt_ha.py      MqttHaSelector — the default online lab switch (MQTT + HA discovery)
+    home_assistant.py  HomeAssistantSelector — legacy REST online lab switch
   nfs.py            read-only mount context manager
   backups.py        find archives, read embedded tags
   proxmox.py        qmrestore / qm / qm destroy wrappers, startup= parsing
@@ -314,15 +360,19 @@ tests/
 1. `cp config.example.json /etc/coldstandby/config.json` and fill in:
    - `dongle_marker_token` — a random secret (`openssl rand -hex 32`)
    - `restore_storage` — local storage the restored disks land on
-   - *(optional)* `ha_base_url` + `ha_token` for the online lab selector;
-     leave them empty to skip that layer entirely
-2. *(optional, for the online lab selector)* The implementation wired in
-   uses Home Assistant: create `input_select.coldstandby_mode` with
+   - *(optional)* `mqtt_broker` for the default online lab selector
+     (needs `pip install pve-coldstandby[mqtt]`, see *Online selector:
+     MQTT*); or `ha_base_url` + `ha_token` for the legacy REST one. Leave
+     all of them empty to skip the online layer entirely.
+2. *(optional, MQTT)* Point Home Assistant's MQTT integration at the same
+   broker with discovery enabled (the default) and the entities appear on
+   their own — a `select` for `next_boot_mode` and five `last_boot_*`
+   sensors, grouped under one device. Nothing to create by hand.
+   *(optional, legacy REST)* Create `input_select.coldstandby_mode` with
    options `replication` and `lab`, default `replication`, and generate a
    long-lived access token for `ha_token`. The boot decision is published
-   to `ha_status_entity` (`sensor.coldstandby_boot` by default — HA
-   creates it on first write; set `""` to publish nothing). Any other
-   switch works via a new module in `coldstandby/selectors/`.
+   to `ha_status_entity` (`sensor.coldstandby_boot` by default; set `""`
+   to publish nothing).
 3. Prepare a dongle per mode you want to be able to force: format a small
    USB stick, label its filesystem `COLDSTANDBY-EMERGENCY` (or `-LAB` /
    `-REPLICATION`) with `fatlabel` / `e2label`, and put the same secret as
@@ -347,5 +397,7 @@ the node is already up (before Lab work, say). Add `--dry-run` to preview.
 
 ## Tests
 
-`pip install -e '.[dev]' && pytest` — stdlib-only runtime, pytest for the
-suite. Everything that shells out is mocked; no Proxmox needed.
+`pip install -e '.[dev]' && pytest` — `dev` pulls in pytest and paho-mqtt
+so the MQTT selector's tests run too. Everything that shells out or talks
+to a broker/API is mocked; no Proxmox, MQTT broker, or Home Assistant
+needed.

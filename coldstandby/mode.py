@@ -114,10 +114,14 @@ class ModeSelector(abc.ABC):
         has nothing to report to)."""
 
 
-def determine_mode(selectors: Sequence[ModeSelector], *, publish: bool = True) -> Mode:
+def determine_mode(selectors: Sequence[ModeSelector], *, dry_run: bool = False) -> Mode:
     """First selector (in priority order) with an opinion wins; then the
-    decision is published to all of them (unless ``publish`` is False, e.g.
-    for a dry run -- a dry run must not clobber the real last-boot status)."""
+    decision is published to all of them.
+
+    ``dry_run`` resolves the mode but changes nothing outward: the winning
+    selector's request is *not* consumed (`clear`) and the decision is
+    *not* published (`publish_result`), so a preview can't reset a pending
+    Lab request or clobber the real last-boot status."""
     decided: Mode | None = None
     decided_by: str | None = None
     requests: dict[str, str] = {}
@@ -142,14 +146,15 @@ def determine_mode(selectors: Sequence[ModeSelector], *, publish: bool = True) -
             continue
 
         log.info("%s selects %s mode.", name, requested.value)
-        try:
-            selector.clear()
-        except ModeSelectorUnavailable as exc:
-            log.error(
-                "%s: could not clear after consuming its request (%s) -- "
-                "reset it by hand.",
-                name, exc,
-            )
+        if not dry_run:
+            try:
+                selector.clear()
+            except ModeSelectorUnavailable as exc:
+                log.error(
+                    "%s: could not clear after consuming its request (%s) -- "
+                    "reset it by hand.",
+                    name, exc,
+                )
         decided, decided_by = requested, name
         requests[name] = requested.value
 
@@ -162,10 +167,10 @@ def determine_mode(selectors: Sequence[ModeSelector], *, publish: bool = True) -
         selector_requests=requests,
     )
     log.info("Boot mode decided: %s", decision.summary())
-    if publish:
-        _publish(selectors, decision)
+    if dry_run:
+        log.debug("Dry run -- not consuming the request or publishing the decision.")
     else:
-        log.debug("Dry run -- not publishing the decision.")
+        _publish(selectors, decision)
     return decision.mode
 
 

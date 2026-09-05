@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         mode = Mode(args.force_mode)
         log.warning("Mode resolution skipped -- forced to %s.", mode.value)
     else:
-        mode = determine_mode(build_selectors(cfg), publish=not args.dry_run)
+        mode = determine_mode(build_selectors(cfg), dry_run=args.dry_run)
 
     log.info("Boot mode: %s%s", mode.value, " (dry run)" if args.dry_run else "")
 

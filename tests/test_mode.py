@@ -90,21 +90,24 @@ def test_every_selector_gets_the_decision():
     class A(FakeSelector): ...
     class B(FakeSelector): ...
     class C(FakeSelector): ...
+    class D(FakeSelector): ...
 
     a = A(unavailable=True)     # skipped during resolution
-    b = B(Mode.LAB)             # decides
-    c = C(Mode.EMERGENCY)       # never consulted (lower priority)
-    determine_mode([a, b, c])
+    b = B(None)                 # no preference
+    c = C(Mode.LAB)             # decides
+    d = D(Mode.EMERGENCY)       # never consulted (lower priority)
+    determine_mode([a, b, c, d])
 
-    for sel in (a, b, c):
+    for sel in (a, b, c, d):
         assert isinstance(sel.published, ModeDecision)
         assert sel.published.mode is Mode.LAB
-        assert sel.published.decided_by == "B"
+        assert sel.published.decided_by == "C"
 
-    assert b.published.selector_requests == {
+    assert c.published.selector_requests == {
         "A": REQUEST_UNAVAILABLE,
-        "B": "lab",
-        "C": REQUEST_NOT_CONSULTED,
+        "B": REQUEST_NONE,
+        "C": "lab",
+        "D": REQUEST_NOT_CONSULTED,
     }
 
 
@@ -115,10 +118,11 @@ def test_fallback_decision_has_no_decider():
     assert sel.published.decided_by is None
 
 
-def test_publish_can_be_suppressed():
+def test_dry_run_neither_consumes_nor_publishes():
     sel = FakeSelector(Mode.LAB)
-    assert determine_mode([sel], publish=False) is Mode.LAB
-    assert sel.published is None
+    assert determine_mode([sel], dry_run=True) is Mode.LAB
+    assert sel.cleared == 0      # request left intact
+    assert sel.published is None  # nothing published
 
 
 def test_publish_failure_is_swallowed():

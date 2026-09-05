@@ -1,4 +1,16 @@
 {
+  "node_name": "",
+
+  "mqtt_broker": "mqtt.roelle.home",
+  "mqtt_port": 1883,
+  "mqtt_username": "",
+  "mqtt_password": "",
+  "mqtt_tls": false,
+  "mqtt_tls_ca_cert": "",
+  "mqtt_base_topic": "",
+  "mqtt_discovery": true,
+  "mqtt_discovery_prefix": "homeassistant",
+
   "ha_base_url": "http://homeassistant.roelle.home:8123",
   "ha_token": "REPLACE_WITH_A_LONG_LIVED_ACCESS_TOKEN",
   "ha_lab_select_entity": "input_select.coldstandby_mode",
