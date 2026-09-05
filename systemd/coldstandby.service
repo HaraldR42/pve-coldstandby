@@ -1,6 +1,6 @@
 [Unit]
 Description=Cold-standby boot-mode controller
-Documentation=https://github.com/haraldroelle/pve-coldstandby
+Documentation=https://github.com/HaraldR42/pve-coldstandby
 # pve-guests.service is masked permanently on this node -- guest starts
 # only happen via this controller's own start logic (Emergency mode).
 After=network-online.target pve-cluster.service

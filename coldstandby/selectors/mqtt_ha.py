@@ -178,7 +178,7 @@ class MqttHaSelector(ModeSelector):
     def _require_paho() -> None:
         if mqtt is None:
             raise ModeSelectorUnavailable(
-                "paho-mqtt is not installed -- pip install pve-coldstandby[mqtt]"
+                "paho-mqtt is not installed -- apt install python3-paho-mqtt"
             )
 
     # -- Home Assistant discovery --------------------------------
