@@ -1,15 +1,21 @@
 import datetime as dt
+import subprocess
+from pathlib import Path
 
 import pytest
 
+from coldstandby import backups
 from coldstandby.backups import (
+    BackupArchive,
+    _decompressor_argv,
     _latest_per_vmid,
     _parse_archive_name,
+    _read_embedded_config,
     config_has_tag,
     newest_archive_age_days,
     parse_vma_config,
 )
-from coldstandby.backups import BackupArchive
+from coldstandby.config import Config
 
 
 def _arc(name: str):
@@ -84,3 +90,148 @@ def test_newest_archive_age_days_uses_oldest_selected():
     age = newest_archive_age_days([b1, b2])
     assert 8.9 < age < 9.1
     assert newest_archive_age_days([]) is None
+
+
+# --- reading the embedded config without fully expanding the archive ----
+
+def _cfg(**kw) -> Config:
+    base = dict(dongle_marker_token="s")
+    base.update(kw)
+    return Config(**base)
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("vzdump-qemu-100-2026_08_30-02_15_00.vma.zst", ("zstd", "-d", "-c", "-q")),
+        ("vzdump-qemu-100-2026_08_30-02_15_00.vma.gz", ("gzip", "-d", "-c")),
+        ("vzdump-qemu-100-2026_08_30-02_15_00.vma.lzo", ("lzop", "-d", "-c")),
+        ("vzdump-qemu-100-2026_08_30-02_15_00.vma", None),
+    ],
+)
+def test_decompressor_argv_by_suffix(name, expected):
+    assert _decompressor_argv(Path(name)) == expected
+
+
+def test_uncompressed_archive_runs_vma_directly(monkeypatch):
+    seen = {}
+
+    def fake_run(argv, *, stdin, capture_output, text, timeout):
+        seen["argv"] = argv
+        seen["stdin"] = stdin
+        return subprocess.CompletedProcess(argv, 0, stdout="tags: standby\n", stderr="")
+
+    monkeypatch.setattr(backups.subprocess, "run", fake_run)
+    archive = BackupArchive(Path("/nfs/vzdump-qemu-100-2026_08_30-02_15_00.vma"), 100, dt.datetime.now())
+
+    result = _read_embedded_config(archive, _cfg())
+
+    assert result == {"tags": "standby"}
+    assert seen["argv"] == ["vma", "config", str(archive.path)]
+    assert seen["stdin"] is None
+
+
+class _FakeStdout:
+    """Stands in for the read end of the decompressor's stdout pipe."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePopen:
+    """Stands in for the decompressor subprocess.Popen."""
+
+    instances = []
+
+    def __init__(self, argv, stdout=None, stderr=None):
+        self.argv = argv
+        self.stdout = _FakeStdout()
+        self.waited_timeout = None
+        self.killed = False
+        _FakePopen.instances.append(self)
+
+    def wait(self, timeout=None):
+        self.waited_timeout = timeout
+
+    def kill(self):
+        self.killed = True
+
+
+def test_compressed_archive_pipes_decompressor_into_vma(monkeypatch):
+    _FakePopen.instances.clear()
+    monkeypatch.setattr(backups.subprocess, "Popen", _FakePopen)
+
+    seen = {}
+
+    def fake_run(argv, *, stdin, capture_output, text, timeout):
+        seen["argv"] = argv
+        seen["stdin"] = stdin
+        return subprocess.CompletedProcess(argv, 0, stdout="tags: standby\n", stderr="")
+
+    monkeypatch.setattr(backups.subprocess, "run", fake_run)
+    archive = BackupArchive(Path("/nfs/vzdump-qemu-100-2026_08_30-02_15_00.vma.zst"), 100, dt.datetime.now())
+
+    result = _read_embedded_config(archive, _cfg())
+
+    assert result == {"tags": "standby"}
+    assert seen["argv"] == ["vma", "config", "-"]
+    popen = _FakePopen.instances[0]
+    assert popen.argv == ["zstd", "-d", "-c", "-q", str(archive.path)]
+    assert seen["stdin"] is popen.stdout
+    # the pipe was closed and the decompressor reaped -- not left running
+    # against the rest of the archive, and not leaked as a zombie.
+    assert popen.stdout.closed is True
+    assert popen.waited_timeout == backups._DECOMPRESSOR_REAP_TIMEOUT
+
+
+def test_decompressor_missing_binary_is_handled(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("zstd")
+
+    monkeypatch.setattr(backups.subprocess, "Popen", boom)
+    archive = BackupArchive(Path("/nfs/vzdump-qemu-100-2026_08_30-02_15_00.vma.zst"), 100, dt.datetime.now())
+    assert _read_embedded_config(archive, _cfg()) is None
+
+
+def test_decompressor_is_reaped_even_if_vma_fails(monkeypatch):
+    _FakePopen.instances.clear()
+    monkeypatch.setattr(backups.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(
+        backups.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess([], 1, stdout="", stderr="not a vma file"),
+    )
+    archive = BackupArchive(Path("/nfs/vzdump-qemu-100-2026_08_30-02_15_00.vma.zst"), 100, dt.datetime.now())
+
+    assert _read_embedded_config(archive, _cfg()) is None
+    assert _FakePopen.instances[0].waited_timeout == backups._DECOMPRESSOR_REAP_TIMEOUT
+
+
+def test_stuck_decompressor_is_killed(monkeypatch):
+    class _HangingPopen(_FakePopen):
+        def wait(self, timeout=None):
+            self.waited_timeout = timeout
+            if not self.killed:
+                raise subprocess.TimeoutExpired(cmd="zstd", timeout=timeout)
+
+    _FakePopen.instances.clear()
+    monkeypatch.setattr(backups.subprocess, "Popen", _HangingPopen)
+    monkeypatch.setattr(
+        backups.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="tags: standby\n", stderr=""),
+    )
+    archive = BackupArchive(Path("/nfs/vzdump-qemu-100-2026_08_30-02_15_00.vma.zst"), 100, dt.datetime.now())
+
+    assert _read_embedded_config(archive, _cfg()) == {"tags": "standby"}
+    assert _FakePopen.instances[0].killed is True
+
+
+def test_vma_timeout_is_handled(monkeypatch):
+    def timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="vma", timeout=1)
+
+    monkeypatch.setattr(backups.subprocess, "run", timeout)
+    archive = BackupArchive(Path("/nfs/vzdump-qemu-100-2026_08_30-02_15_00.vma"), 100, dt.datetime.now())
+    assert _read_embedded_config(archive, _cfg()) is None

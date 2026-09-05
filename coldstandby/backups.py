@@ -10,6 +10,16 @@ the guest's full configuration at backup time, and `tags` is part of that
 configuration. So we read the tag list straight out of each archive with
 ``vma config`` -- no restore, no source VM, no `main`.
 
+`vzdump` compresses by default (``.vma.zst``, or ``.gz`` / ``.lzo`` on
+older setups), and the embedded config sits in the VMA header at the very
+start of the *uncompressed* stream. ``vma`` itself cannot read compressed
+archives directly, but we don't need to inflate the whole thing just to
+reach a header: the matching decompressor is piped straight into
+``vma config -``, and once ``vma`` has the header and exits, closing our
+end of that pipe makes the decompressor see a broken pipe and stop -- so a
+multi-gigabyte backup only ever gets a few KB decompressed, not the whole
+archive.
+
 Archive naming (file-level storage like NFS):
 
     vzdump-qemu-<vmid>-<YYYY_MM_DD>-<HH_MM_SS>.vma.zst
@@ -30,6 +40,19 @@ from pathlib import Path
 from .config import Config
 
 log = logging.getLogger(__name__)
+
+# How to decompress each archive suffix into a stream `vma config -` can
+# read. A plain ".vma" file (no entry here) is read directly -- no pipe,
+# no subprocess, `vma` just opens and seeks it.
+_DECOMPRESSORS: dict[str, tuple[str, ...]] = {
+    "zst": ("zstd", "-d", "-c", "-q"),
+    "gz": ("gzip", "-d", "-c"),
+    "lzo": ("lzop", "-d", "-c"),
+}
+# Grace period to let a decompressor notice its pipe closed and exit on its
+# own before we kill it. Not tied to vma_config_timeout_seconds -- that one
+# bounds `vma config` itself, this just bounds cleanup afterwards.
+_DECOMPRESSOR_REAP_TIMEOUT = 5.0
 
 # Compression suffixes `vma` knows how to read. Order doesn't matter; the
 # suffix is only used to recognise the file, `vma` sniffs the actual format.
@@ -117,26 +140,66 @@ def parse_vma_config(text: str) -> dict[str, str]:
     return config
 
 
+def _decompressor_argv(path: Path) -> tuple[str, ...] | None:
+    """The decompressor for this archive's suffix, or ``None`` for a plain
+    (uncompressed) ``.vma``."""
+    return _DECOMPRESSORS.get(path.suffix.lstrip(".").lower())
+
+
 def _read_embedded_config(archive: BackupArchive, cfg: Config) -> dict[str, str] | None:
     """Read the guest config embedded in an archive via ``vma config``.
 
-    ``vma`` handles the zstd/gzip/lzo decompression itself given the file
-    path. On any failure we return ``None`` and the caller drops the
-    archive -- we never guess membership.
+    On any failure we return ``None`` and the caller drops the archive --
+    we never guess membership.
     """
+    decompressor_argv = _decompressor_argv(archive.path)
+    if decompressor_argv is None:
+        return _run_vma_config(["vma", "config", str(archive.path)], stdin=None, cfg=cfg, archive=archive)
+
+    try:
+        decompressor = subprocess.Popen(
+            [*decompressor_argv, str(archive.path)],
+            stdout=subprocess.PIPE,
+            # A broken-pipe complaint here is the expected, desired outcome
+            # (see below) -- not worth surfacing as a warning.
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        log.warning("Could not start %s for %s: %s", decompressor_argv[0], archive.name, exc)
+        return None
+
+    try:
+        return _run_vma_config(["vma", "config", "-"], stdin=decompressor.stdout, cfg=cfg, archive=archive)
+    finally:
+        # Our copy of the pipe's read end is the last thing keeping it
+        # open once `vma config` has exited -- closing it makes the
+        # decompressor's next write() fail with EPIPE, so it stops after
+        # at most a header's worth (plus one pipe buffer) of output
+        # instead of inflating the rest of a multi-gigabyte archive.
+        if decompressor.stdout is not None:
+            decompressor.stdout.close()
+        try:
+            decompressor.wait(timeout=_DECOMPRESSOR_REAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            decompressor.kill()
+            decompressor.wait()
+
+
+def _run_vma_config(argv: list[str], *, stdin, cfg: Config, archive: BackupArchive) -> dict[str, str] | None:
     try:
         result = subprocess.run(
-            ["vma", "config", str(archive.path)],
+            argv,
+            stdin=stdin,
             capture_output=True,
             text=True,
             timeout=cfg.vma_config_timeout_seconds,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        log.warning("Could not run `vma config %s`: %s", archive.name, exc)
+        log.warning("Could not run `vma config` for %s: %s", archive.name, exc)
         return None
     if result.returncode != 0:
         log.warning(
-            "`vma config %s` failed (rc=%d): %s",
+            "`vma config` for %s failed (rc=%d): %s",
             archive.name,
             result.returncode,
             result.stderr.strip(),
