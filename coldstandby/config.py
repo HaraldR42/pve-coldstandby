@@ -9,10 +9,15 @@ fill it in.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+
+from .mode import FAT_FS_LABEL_LEN, MAX_FS_LABEL_LEN, max_dongle_label_len
+
+log = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path(os.environ.get("COLDSTANDBY_CONFIG", "/etc/coldstandby/config.json"))
 
@@ -62,11 +67,13 @@ class Config:
     ha_status_entity: str = "sensor.coldstandby_boot"
 
     # --- Dongle mode selection ---------------------------------------
-    # A dongle names its mode in the fs label: "<prefix>-EMERGENCY",
-    # "<prefix>-LAB", "<prefix>-REPLICATION". To count it must also carry a
-    # marker file with this exact token -- a label match alone is never
-    # enough (see selectors/dongle.py).
-    dongle_label_prefix: str = "COLDSTANDBY"
+    # A dongle names its mode in the fs label: "<prefix>-EMERG",
+    # "<prefix>-LAB", "<prefix>-REPL". To count it must also carry a marker
+    # file with this exact token -- a label match alone is never enough
+    # (see selectors/dongle.py). Filesystem labels cap at 16 chars (ext) /
+    # 11 chars (vfat), so keep the prefix short: <= 10 (<= 5 for a
+    # FAT-formatted stick). Validated at load.
+    dongle_label_prefix: str = "CSBY"
     dongle_marker_filename: str = ".coldstandby-token"
     dongle_marker_token: str = ""  # required: set a random secret in config.json
     dongle_mount_point: Path = field(default_factory=lambda: Path("/mnt/coldstandby-dongle"))
@@ -152,6 +159,23 @@ class Config:
             raise SystemExit(
                 "ha_base_url and ha_token must be set together (or both left "
                 "empty to disable the REST Home Assistant selector)."
+            )
+
+        widest = max_dongle_label_len(cfg.dongle_label_prefix)
+        if widest > MAX_FS_LABEL_LEN:
+            raise SystemExit(
+                f"dongle_label_prefix {cfg.dongle_label_prefix!r} is too long: it "
+                f"produces a {widest}-char filesystem label, over the "
+                f"{MAX_FS_LABEL_LEN}-char limit. Shorten it to <= "
+                f"{MAX_FS_LABEL_LEN - (widest - len(cfg.dongle_label_prefix))} "
+                f"characters."
+            )
+        if widest > FAT_FS_LABEL_LEN:
+            log.warning(
+                "dongle_label_prefix %r produces labels up to %d chars -- fine "
+                "for an ext-formatted dongle, but a FAT/vfat label is truncated "
+                "to %d and the dongle won't be found.",
+                cfg.dongle_label_prefix, widest, FAT_FS_LABEL_LEN,
             )
 
         return cfg

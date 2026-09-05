@@ -1,11 +1,13 @@
 """`DongleSelector` -- mode selection from a labelled, token-marked USB stick.
 
-A dongle names the mode it selects in its filesystem label:
+A dongle names the mode it selects in its filesystem label (with the
+default ``dongle_label_prefix`` of ``CSBY``):
 
-    COLDSTANDBY-EMERGENCY   COLDSTANDBY-LAB   COLDSTANDBY-REPLICATION
+    CSBY-EMERG   CSBY-LAB   CSBY-REPL
 
-(the prefix is ``dongle_label_prefix``; the suffix is the mode name,
-upper-cased). To count, the dongle must ALSO carry a marker file
+Filesystem labels are short -- 16 chars on ext, only 11 on vfat -- so the
+mode part is a fixed short code (see ``mode.DONGLE_LABEL_CODES``), not the
+spelled-out mode name. To count, the dongle must ALSO carry a marker file
 (``dongle_marker_filename``) whose contents exactly match
 ``dongle_marker_token`` -- a label match alone is never enough, so a
 random stick that happens to share a label can't trigger anything.
@@ -24,7 +26,7 @@ import logging
 import subprocess
 
 from ..config import Config
-from ..mode import Mode, ModeSelector
+from ..mode import Mode, ModeSelector, dongle_label
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +38,7 @@ class DongleSelector(ModeSelector):
     def mode_requested(self) -> Mode | None:
         matched: list[Mode] = []
         for mode in Mode:
-            label = f"{self._cfg.dongle_label_prefix}-{mode.value.upper()}"
+            label = dongle_label(self._cfg.dongle_label_prefix, mode)
             device = self._find_device_by_label(label)
             if device is None:
                 continue

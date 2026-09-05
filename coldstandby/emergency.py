@@ -1,6 +1,6 @@
 """Emergency mode -- `main` is presumed dead; bring the standby up for real.
 
-Normally entered only via the physical `COLDSTANDBY-EMERGENCY` dongle (see
+Normally entered only via the physical `CSBY-EMERG` dongle (see
 selectors/dongle.py) -- so it cannot be triggered remotely or by accident, and it
 works with the rest of the home network down. (`--force-mode emergency` is
 the recovery-only bypass.)

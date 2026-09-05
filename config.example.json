@@ -17,7 +17,7 @@
   "ha_status_entity": "sensor.coldstandby_boot",
 
   "dongle_marker_token": "REPLACE_WITH_A_RANDOM_SECRET_STRING",
-  "dongle_label_prefix": "COLDSTANDBY",
+  "dongle_label_prefix": "CSBY",
   "dongle_marker_filename": ".coldstandby-token",
 
   "nfs_server": "filer.roelle.home",

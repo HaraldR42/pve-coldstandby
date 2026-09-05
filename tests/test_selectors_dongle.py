@@ -40,7 +40,7 @@ def test_blkid_missing_is_no_opinion(monkeypatch):
         raise FileNotFoundError("blkid")
 
     monkeypatch.setattr(dongle.subprocess, "run", boom)
-    assert DongleSelector._find_device_by_label("COLDSTANDBY-LAB") is None
+    assert DongleSelector._find_device_by_label("CSBY-LAB") is None
     assert _sel().mode_requested() is None
 
 
@@ -51,13 +51,13 @@ def test_valid_lab_dongle(monkeypatch):
 
 
 def test_valid_emergency_dongle(monkeypatch):
-    monkeypatch.setattr(DongleSelector, "_find_device_by_label", _find_only("EMERGENCY"))
+    monkeypatch.setattr(DongleSelector, "_find_device_by_label", _find_only("EMERG"))
     monkeypatch.setattr(DongleSelector, "_marker_token_matches", _token(True))
     assert _sel().mode_requested() is Mode.EMERGENCY
 
 
 def test_bad_token_is_ignored(monkeypatch):
-    monkeypatch.setattr(DongleSelector, "_find_device_by_label", _find_only("EMERGENCY"))
+    monkeypatch.setattr(DongleSelector, "_find_device_by_label", _find_only("EMERG"))
     monkeypatch.setattr(DongleSelector, "_marker_token_matches", _token(False))
     assert _sel().mode_requested() is None
 
@@ -68,14 +68,22 @@ def test_multiple_mode_dongles_refused(monkeypatch):
     assert _sel().mode_requested() is None
 
 
-def test_label_prefix_and_suffixes(monkeypatch):
+def test_label_prefix_and_short_codes(monkeypatch):
     seen = []
     monkeypatch.setattr(
         DongleSelector, "_find_device_by_label",
         staticmethod(lambda label: seen.append(label) or None),
     )
     _sel(dongle_label_prefix="FOO").mode_requested()
-    assert seen == ["FOO-EMERGENCY", "FOO-LAB", "FOO-REPLICATION"]
+    assert seen == ["FOO-EMERG", "FOO-LAB", "FOO-REPL"]
+    assert all(len(lbl) <= 16 for lbl in seen)
+
+
+def test_default_prefix_labels_fit_fat_and_ext():
+    from coldstandby.mode import Mode, dongle_label
+
+    for mode in Mode:
+        assert len(dongle_label("CSBY", mode)) <= 11  # vfat's limit, the tighter one
 
 
 def test_clear_is_a_noop():

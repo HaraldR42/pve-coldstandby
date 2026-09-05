@@ -140,13 +140,14 @@ Two selectors ship:
 
 1. **Dongle** (`DongleSelector`, always first, always present). A valid
    mode dongle plugged in selects the mode, beating everything after it. A
-   dongle names its mode in its filesystem label
-   (`COLDSTANDBY-EMERGENCY`, `COLDSTANDBY-LAB`, `COLDSTANDBY-REPLICATION`)
-   and must also carry a marker file whose contents match a secret token
-   in config — a label alone does nothing. Decided purely from local
-   hardware: nothing online, so it works when the home network is what's
-   down. Two different mode dongles at once are refused (no preference —
-   falls through).
+   dongle names its mode in its filesystem label — `<prefix>-EMERG`,
+   `<prefix>-LAB`, `<prefix>-REPL` (`dongle_label_prefix`, default `CSBY`,
+   so `CSBY-EMERG` etc.; filesystem labels only hold 16 chars, 11 on FAT,
+   hence the short codes) — and must also carry a marker file whose
+   contents match a secret token in config; a label alone does nothing.
+   Decided purely from local hardware: nothing online, so it works when
+   the home network is what's down. Two different mode dongles at once are
+   refused (no preference — falls through).
 2. **Online selector** (`MqttHaSelector`, optional). A switch — an MQTT
    `next_boot_mode` topic, surfaced in Home Assistant as a `select` via
    MQTT discovery — that requests Lab, and nothing else, for the next boot
@@ -202,7 +203,7 @@ hands-on procedure a human runs, in this order:
    DC, or touch shared state while the standby is about to do the same.
    Cutting the wire is crude but certain, and needs no cooperation from
    the sick host. Do **not** skip this even if `main` "looks dead".
-3. **Plug the `COLDSTANDBY-EMERGENCY` dongle into the backup node.**
+3. **Plug the `CSBY-EMERG` dongle into the backup node.**
 4. **Power the backup node on** (WOL or the front-panel button). It boots,
    resolves Emergency mode from the dongle, starts the standby guests in
    `startup=` order, and stays up.
@@ -374,10 +375,13 @@ tests/
    to `ha_status_entity` (`sensor.coldstandby_boot` by default; set `""`
    to publish nothing).
 3. Prepare a dongle per mode you want to be able to force: format a small
-   USB stick, label its filesystem `COLDSTANDBY-EMERGENCY` (or `-LAB` /
-   `-REPLICATION`) with `fatlabel` / `e2label`, and put the same secret as
-   `dongle_marker_token` in a file `.coldstandby-token` on it. An Emergency
-   dongle is the one that matters; the others are conveniences.
+   USB stick and label its filesystem `CSBY-EMERG` (or `CSBY-LAB` /
+   `CSBY-REPL`) — `e2label <dev> CSBY-EMERG` for ext, `fatlabel <dev>
+   CSBY-EMERG` for FAT. Filesystem labels max out at 16 chars (11 on FAT),
+   so keep `dongle_label_prefix` short if you change it from `CSBY`; the
+   config load fails if a label would overflow. Put the same secret as
+   `dongle_marker_token` in a file `.coldstandby-token` on the stick. The
+   Emergency dongle is the one that matters; the others are conveniences.
 4. `systemctl mask pve-guests.service` (the controller also re-asserts
    this itself on every run, but mask it now so the first boot is clean)
 5. Install to `/opt/coldstandby`, copy `systemd/coldstandby.service` to

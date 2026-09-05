@@ -63,6 +63,28 @@ def test_half_configured_online_selector_exits(tmp_path, half):
         Config.load(p)
 
 
+def test_default_dongle_label_prefix_fits(tmp_path):
+    cfg = Config.load(_write(tmp_path, {"dongle_marker_token": "s"}))
+    assert cfg.dongle_label_prefix == "CSBY"
+
+
+def test_over_long_dongle_label_prefix_exits(tmp_path):
+    # "COLDSTANDBY" -> "COLDSTANDBY-EMERG" is 17 chars, over the 16 limit
+    p = _write(tmp_path, {"dongle_marker_token": "s", "dongle_label_prefix": "COLDSTANDBY"})
+    with pytest.raises(SystemExit):
+        Config.load(p)
+
+
+def test_ext_only_dongle_label_prefix_warns_but_loads(tmp_path, caplog):
+    # "STANDBYNODE" -> "STANDBYNODE-EMERG" is 17... use one that fits ext (16)
+    # but not vfat (11): "COLDSPARE" -> "COLDSPARE-EMERG" = 15
+    p = _write(tmp_path, {"dongle_marker_token": "s", "dongle_label_prefix": "COLDSPARE"})
+    with caplog.at_level("WARNING"):
+        cfg = Config.load(p)
+    assert cfg.dongle_label_prefix == "COLDSPARE"
+    assert any("FAT" in r.message for r in caplog.records)
+
+
 def test_missing_file_exits(tmp_path):
     with pytest.raises(SystemExit):
         Config.load(tmp_path / "nope.json")

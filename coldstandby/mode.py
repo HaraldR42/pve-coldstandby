@@ -43,6 +43,31 @@ class Mode(enum.Enum):
     REPLICATION = "replication"
 
 
+# --- Dongle filesystem labels -------------------------------------------
+# A mode dongle is recognised by its filesystem label, "<prefix>-<CODE>".
+# Filesystem labels are short: 16 chars on ext2/3/4, only 11 on vfat -- so
+# the mode part is a fixed short code, not the spelled-out mode name, and
+# the prefix has a budget (see Config: dongle_label_prefix).
+MAX_FS_LABEL_LEN = 16          # ext2/3/4; vfat allows only 11
+FAT_FS_LABEL_LEN = 11
+DONGLE_LABEL_CODES: dict[Mode, str] = {
+    Mode.EMERGENCY: "EMERG",
+    Mode.LAB: "LAB",
+    Mode.REPLICATION: "REPL",
+}
+_LONGEST_LABEL_CODE = max(len(c) for c in DONGLE_LABEL_CODES.values())
+
+
+def dongle_label(prefix: str, mode: Mode) -> str:
+    """The filesystem label a dongle for ``mode`` must carry."""
+    return f"{prefix}-{DONGLE_LABEL_CODES[mode]}"
+
+
+def max_dongle_label_len(prefix: str) -> int:
+    """Length of the longest label ``prefix`` would produce."""
+    return len(prefix) + 1 + _LONGEST_LABEL_CODE
+
+
 # What a selector's mode_requested() amounted to, for the status report.
 REQUEST_UNAVAILABLE = "unavailable"
 REQUEST_NONE = "no preference"
