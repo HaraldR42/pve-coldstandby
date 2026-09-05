@@ -4,7 +4,7 @@ This is the online selector `build_selectors` wires in by default; it takes
 the place of the REST `HomeAssistantSelector` whenever `mqtt_broker` is
 configured. It needs the ``mqtt`` extra::
 
-    pip install pve-coldstandby[mqtt]
+    apt install python3-paho-mqtt
 
 Topic tree -- everything under ``<project>/<node>`` (override with
 ``mqtt_base_topic``):
@@ -78,31 +78,47 @@ class MqttHaSelector(ModeSelector):
     # -- ModeSelector ------------------------------------------------
 
     def mode_requested(self) -> Mode | None:
-        payload = self._read_retained(self._topic("next_boot_mode"))
+        topic = self._topic("next_boot_mode")
+        log.info("Checking MQTT %s ...", topic)
+        payload = self._read_retained(topic)
         if payload is None:
+            log.info("MQTT %s not set -- no request.", topic)
             return None
         value = payload.strip().lower()
         if value == self._cfg.ha_lab_option:
+            log.info("MQTT %s = %r -> requesting Lab mode.", topic, value)
             return Mode.LAB
         if value in ("", self._cfg.ha_replication_option):
+            log.info("MQTT %s = %r -> no request (default).", topic, value)
             return None
         log.warning(
-            "MQTT next_boot_mode=%r is not an option offered here -- ignoring.",
-            value,
+            "MQTT %s = %r is not an option offered here -- ignoring.", topic, value
         )
         return None
 
     def clear(self) -> None:
         """Consume the request: reset next_boot_mode to the replication
         option (retained), so the next unattended boot is normal again."""
+        log.info(
+            "Resetting MQTT %s to %r (request consumed).",
+            self._topic("next_boot_mode"), self._cfg.ha_replication_option,
+        )
         with self._connection() as client:
             self._publish(client, self._topic("next_boot_mode"),
                           self._cfg.ha_replication_option, retain=True)
 
     def publish_result(self, decision: ModeDecision) -> None:
         d = decision.as_dict()
+        log.info(
+            "Publishing boot result to MQTT under %s (mode=%s, decided_by=%s).",
+            self._cfg.mqtt_topic_base, d["mode"], d["decided_by"] or "default",
+        )
         with self._connection() as client:
             if self._cfg.mqtt_discovery:
+                log.info(
+                    "Publishing Home Assistant discovery for device %r to %s.",
+                    self._node_id(), self._discovery_topic(),
+                )
                 self._publish(
                     client, self._discovery_topic(),
                     json.dumps(self._discovery_payload()), retain=True,
@@ -119,6 +135,7 @@ class MqttHaSelector(ModeSelector):
             # Whatever it held, the request has now been acted on.
             self._publish(client, self._topic("next_boot_mode"),
                           self._cfg.ha_replication_option, retain=True)
+        log.info("MQTT boot result published (%d topics).", len(_LAST_BOOT_KEYS) + 1)
 
     # -- MQTT plumbing ---------------------------------------------
 
@@ -136,10 +153,15 @@ class MqttHaSelector(ModeSelector):
         with self._connection() as client:
             client.on_message = on_message
             client.subscribe(topic, qos=1)
-            received.wait(self._cfg.mqtt_timeout_seconds)
+            if not received.wait(self._cfg.mqtt_timeout_seconds):
+                log.debug(
+                    "No retained message on %s within %.0fs.",
+                    topic, self._cfg.mqtt_timeout_seconds,
+                )
         return got.get("payload")
 
     def _publish(self, client, topic: str, payload: str, *, retain: bool) -> None:
+        log.debug("MQTT publish %s (retain=%s, %d bytes).", topic, retain, len(payload))
         info = client.publish(topic, payload, qos=1, retain=retain)
         info.wait_for_publish(self._cfg.mqtt_timeout_seconds)
         if not info.is_published():
@@ -149,19 +171,26 @@ class MqttHaSelector(ModeSelector):
     def _connection(self) -> Iterator["mqtt.Client"]:
         self._require_paho()
         client = self._make_client()
+        target = f"{self._cfg.mqtt_broker}:{self._cfg.mqtt_port}"
+        log.debug(
+            "Connecting to MQTT %s (tls=%s, auth=%s) ...",
+            target, self._cfg.mqtt_tls, bool(self._cfg.mqtt_username),
+        )
         try:
             client.connect(self._cfg.mqtt_broker, self._cfg.mqtt_port, keepalive=60)
         except OSError as exc:
             raise ModeSelectorUnavailable(
-                f"MQTT connect to {self._cfg.mqtt_broker}:{self._cfg.mqtt_port} failed: {exc}"
+                f"MQTT connect to {target} failed: {exc}"
             ) from exc
         client.loop_start()
+        log.debug("MQTT %s connected.", target)
         try:
             yield client
         finally:
             with contextlib.suppress(Exception):
                 client.loop_stop()
                 client.disconnect()
+            log.debug("MQTT %s disconnected.", target)
 
     def _make_client(self):
         client = mqtt.Client(

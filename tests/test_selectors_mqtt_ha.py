@@ -115,6 +115,22 @@ def test_mode_requested_emergency_is_refused(monkeypatch, caplog):
     assert any("not an option" in r.message for r in caplog.records)
 
 
+def test_info_messages_narrate_the_lab_flow(monkeypatch, caplog):
+    _with_client(monkeypatch, FakeClient(retained="lab"))
+    sel = MqttHaSelector(_cfg())
+    with caplog.at_level("INFO", logger="coldstandby.selectors.mqtt_ha"):
+        sel.mode_requested()
+        sel.clear()
+        sel.publish_result(_decision())
+    msgs = " | ".join(r.getMessage() for r in caplog.records if r.levelname == "INFO")
+    assert "Checking MQTT" in msgs
+    assert "requesting Lab mode" in msgs
+    assert "request consumed" in msgs
+    assert "Publishing boot result" in msgs
+    assert "Home Assistant discovery" in msgs
+    assert "boot result published" in msgs
+
+
 # --- clear ----------------------------------------------------------
 
 def test_clear_resets_next_boot_mode(monkeypatch):
