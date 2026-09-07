@@ -291,10 +291,13 @@ exit after the boot work — the systemd unit is `Type=simple`, not oneshot.
 It holds one MQTT connection open, publishes `online = true`, and blocks
 until systemd sends SIGTERM, at which point it publishes `online = false`
 and disconnects. The connection carries a Last Will so a crash or power
-loss still flips `online` to `false`. (A successful Replication that powers
-the node off doesn't hold — it announces `online`, does its work, and the
-poweroff trips the LWT.) Without MQTT configured it still exits after the
-boot work, as before.
+loss still flips `online` to `false`. It stays resident **whatever the
+boot work did — including when it failed** (a failed run leaves the node
+up, so `online` should stay true and the operator can look). The only
+thing that lets it exit is a *successful* Replication that powers the node
+off — that announces `online`, does its work, and lets the poweroff trip
+the LWT. Without MQTT configured it still exits after the boot work, as
+before.
 
 **Home Assistant discovery.** Before publishing the `last_boot_*` values,
 it publishes one HA MQTT *device discovery* message
@@ -410,9 +413,11 @@ tests/
    - `--dry-run` also skips the selectors' writes (consuming the
      next-boot request, publishing the result / HA discovery).
    - `--dry-run --exercise-selectors` runs the selectors for real —
-     including those writes — so you can confirm the MQTT/HA integration
-     end to end while guest restore, starts and shutdown stay a preview.
-     Note it consumes a pending Lab request exactly like a real boot.
+     including those writes, and the MQTT `online` presence — so you can
+     confirm the MQTT/HA integration end to end while guest restore,
+     starts and shutdown stay a preview. It consumes a pending Lab request
+     exactly like a real boot, and (with MQTT) stays resident until you
+     SIGTERM it, same as a real run.
 
 ## Manual replication refresh
 

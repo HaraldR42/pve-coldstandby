@@ -14,7 +14,9 @@ it is handed to every mode selector's `publish_result`.
 The boot work runs once. When MQTT (`mqtt_broker`) is configured, the
 process then stays resident, holding an `online` MQTT presence connection
 open until systemd stops it -- so the unit is `Type=simple`, not oneshot.
-Without MQTT it exits after the boot work as before.
+It stays resident whatever the boot work did, including when it failed;
+the only thing that lets it exit is a successful Replication that powers
+the node off. Without MQTT it exits after the boot work as before.
 """
 from __future__ import annotations
 
@@ -159,44 +161,50 @@ def main(argv: list[str] | None = None) -> int:
             log.exception("Unhandled error during manual replication refresh.")
             return 1
 
-    if args.force_mode:
-        mode = Mode(args.force_mode)
-        log.warning("Mode resolution skipped -- forced to %s.", mode.value)
-    else:
-        # --exercise-selectors: run the selectors for real even under
-        # --dry-run, so their writes (request consumed, result published)
-        # actually happen.
-        selectors_dry_run = args.dry_run and not args.exercise_selectors
-        if args.exercise_selectors:
-            log.warning(
-                "--exercise-selectors: selector writes WILL happen; "
-                "guest work stays a preview."
-            )
-        mode = determine_mode(build_selectors(cfg), dry_run=selectors_dry_run)
-
-    log.info("Boot mode: %s%s", mode.value, " (dry run)" if args.dry_run else "")
-
     # With MQTT configured the controller does not exit after the boot work:
     # it holds an `online` presence connection open until systemd stops it,
-    # so Home Assistant can see whether the node is up. Established before
-    # dispatch so `online` is true for the whole run (a SIGKILL mid-dispatch
-    # then trips the LWT).
+    # so Home Assistant can see whether the node is up. Established up front
+    # so `online` covers the whole run (a SIGKILL mid-run then trips the
+    # LWT), and kept regardless of what the boot work does -- including when
+    # it fails. `--exercise-selectors` (a dry run that still does the real
+    # MQTT writes) counts too.
     presence: MqttPresence | None = None
-    if cfg.mqtt_enabled and not args.dry_run:
+    if cfg.mqtt_enabled and (not args.dry_run or args.exercise_selectors):
         presence = MqttPresence(cfg)
-        presence.start()
+        try:
+            presence.start()
+        except Exception:  # noqa: BLE001 -- never let presence sink the run
+            log.exception("MQTT online presence failed to start.")
 
+    mode = Mode.REPLICATION
+    rc = 1
     try:
+        if args.force_mode:
+            mode = Mode(args.force_mode)
+            log.warning("Mode resolution skipped -- forced to %s.", mode.value)
+        else:
+            # --exercise-selectors: run the selectors for real even under
+            # --dry-run, so their writes (request consumed, result
+            # published) actually happen.
+            selectors_dry_run = args.dry_run and not args.exercise_selectors
+            if args.exercise_selectors:
+                log.warning(
+                    "--exercise-selectors: selector writes WILL happen; "
+                    "guest work stays a preview."
+                )
+            mode = determine_mode(build_selectors(cfg), dry_run=selectors_dry_run)
+
+        log.info("Boot mode: %s%s", mode.value, " (dry run)" if args.dry_run else "")
         rc = _dispatch(mode, cfg, args)
     except Exception:
         # A non-zero exit marks the unit failed; the traceback is in the
         # journal. That is the whole failure signal -- no external sink.
-        log.exception("Unhandled error while executing %s mode.", mode.value)
+        log.exception("Unhandled error during boot-mode resolution or dispatch.")
         rc = 1
 
-    if presence is not None and presence.active:
+    if presence is not None:
         if _node_stays_up(mode, rc, cfg, args):
-            log.info("MQTT online presence held -- staying up until systemd stops us.")
+            log.info("Holding MQTT online presence -- staying up until systemd stops us.")
             _hold_until_signalled()
         presence.stop()
 
@@ -226,8 +234,11 @@ def _dispatch(mode: Mode, cfg: Config, args: argparse.Namespace) -> int:
 
 def _node_stays_up(mode: Mode, rc: int, cfg: Config, args: argparse.Namespace) -> bool:
     """Whether the node remains powered on after this run -- i.e. whether we
-    should hold the MQTT presence open. Only a *successful* Replication that
-    is allowed to power off does not."""
+    should block holding the MQTT presence open. The only thing that powers
+    the node off is a *successful* Replication that is allowed to; a dry run
+    powers nothing off, and any failure leaves the node up."""
+    if args.dry_run:
+        return True
     replication_powers_off = cfg.shutdown_after_replication and not args.no_shutdown
     return not (mode is Mode.REPLICATION and rc == 0 and replication_powers_off)
 

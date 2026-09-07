@@ -236,3 +236,49 @@ def test_no_mqtt_no_presence(monkeypatch, tmp_path):
     main_mod.main(["--config", str(_cfg_file(tmp_path))])  # ha_* config, no mqtt
     assert _FakePresence.instances == []
     assert held == []
+
+
+def test_dry_run_exercise_selectors_holds_presence(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.LAB)
+    main_mod.main([
+        "--config", str(_mqtt_cfg_file(tmp_path)), "--dry-run", "--exercise-selectors",
+    ])
+    pres = _FakePresence.instances[0]
+    assert pres.started and pres.stopped
+    assert held == [True]  # a dry run powers nothing off -> node stays up -> hold
+
+
+def test_mqtt_holds_even_when_dispatch_raises(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.LAB)
+    monkeypatch.setattr(main_mod, "_dispatch", lambda m, c, a: (_ for _ in ()).throw(RuntimeError("boom")))
+    rc = main_mod.main(["--config", str(_mqtt_cfg_file(tmp_path))])
+    assert rc == 1
+    assert _FakePresence.instances[0].started and _FakePresence.instances[0].stopped
+    assert held == [True]  # error -> node stays up -> still holds
+
+
+def test_mqtt_holds_even_when_resolution_raises(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.LAB)
+    monkeypatch.setattr(
+        main_mod, "determine_mode",
+        lambda selectors, *, dry_run: (_ for _ in ()).throw(RuntimeError("resolve boom")),
+    )
+    rc = main_mod.main(["--config", str(_mqtt_cfg_file(tmp_path))])
+    assert rc == 1
+    assert _FakePresence.instances[0].started
+    assert held == [True]
+
+
+def test_presence_start_failure_does_not_sink_the_run(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.LAB)
+
+    class _BadPresence(_FakePresence):
+        def start(self):
+            raise RuntimeError("no broker lib")
+
+    monkeypatch.setattr(main_mod, "MqttPresence", _BadPresence)  # override the one _patched_mqtt_main set
+    rc = main_mod.main(["--config", str(_mqtt_cfg_file(tmp_path))])
+    assert rc == 0
+    # start() blew up but main still holds and cleans up
+    assert _FakePresence.instances[0].stopped
+    assert held == [True]
