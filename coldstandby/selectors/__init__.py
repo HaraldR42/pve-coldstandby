@@ -28,11 +28,12 @@ from ..config import Config
 from ..mode import ModeSelector
 from .dongle import DongleSelector
 from .home_assistant import HomeAssistantSelector
-from .mqtt_ha import MqttHaSelector
+from .mqtt_ha import MqttHaSelector, MqttPresence
 
 __all__ = [
     "DongleSelector",
     "MqttHaSelector",
+    "MqttPresence",
     "HomeAssistantSelector",
     "build_selectors",
 ]

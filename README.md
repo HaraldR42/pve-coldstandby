@@ -284,6 +284,17 @@ share one broker without colliding. `mqtt_base_topic` defaults to
 | `last_boot_host` | yes | the node name |
 | `last_boot_at` | yes | resolution timestamp, ISO 8601 |
 | `last_boot_selectors` | yes | JSON: every selector → what it contributed |
+| `online` | yes | `true` while the node is up; `false` on a clean stop, or via the MQTT LWT if the process just vanishes (crash, power cut) |
+
+**Staying resident.** When `mqtt_broker` is set the controller does **not**
+exit after the boot work — the systemd unit is `Type=simple`, not oneshot.
+It holds one MQTT connection open, publishes `online = true`, and blocks
+until systemd sends SIGTERM, at which point it publishes `online = false`
+and disconnects. The connection carries a Last Will so a crash or power
+loss still flips `online` to `false`. (A successful Replication that powers
+the node off doesn't hold — it announces `online`, does its work, and the
+poweroff trips the LWT.) Without MQTT configured it still exits after the
+boot work, as before.
 
 **Home Assistant discovery.** Before publishing the `last_boot_*` values,
 it publishes one HA MQTT *device discovery* message
@@ -291,15 +302,17 @@ it publishes one HA MQTT *device discovery* message
 `homeassistant`) describing a device — named and identified from
 `node_name` — with a `select` component for `next_boot_mode` (options
 `replication`/`lab` only; Emergency is never offered remotely, matching
-the dongle-only design) and one `sensor` per `last_boot_*` value. Set
-`mqtt_discovery: false` to publish only the raw topics.
+the dongle-only design), one `sensor` per `last_boot_*` value, and an
+`online` connectivity `binary_sensor`. Set `mqtt_discovery: false` to
+publish only the raw topics.
 
 **Availability is deliberately not wired up.** None of the discovered
 components carry an `availability`/`avty` topic, so Home Assistant always
 shows them as available — including the `select`. That's on purpose: the
 whole point is to be able to pick "lab" for the *next* boot while the
 backup node is off, which is exactly when a node-tied availability topic
-would grey it out.
+would grey it out. Node up/down is surfaced instead by the separate
+`online` binary_sensor, which gates nothing.
 
 Auth is optional (`mqtt_username`/`mqtt_password`, `mqtt_tls` +
 `mqtt_tls_ca_cert`); plain anonymous TCP is the default, fine for a
@@ -347,7 +360,7 @@ coldstandby/        the package
   selectors/        the pluggable mode selectors — add new ones here
     __init__.py     build_selectors() — the priority-ordered list
     dongle.py       DongleSelector — label + marker-token USB stick
-    mqtt_ha.py      MqttHaSelector — the default online lab switch (MQTT + HA discovery)
+    mqtt_ha.py      MqttHaSelector (default online lab switch) + MqttPresence (online topic)
     home_assistant.py  HomeAssistantSelector — legacy REST online lab switch
   nfs.py            read-only mount context manager
   backups.py        find archives, read embedded tags

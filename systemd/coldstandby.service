@@ -7,9 +7,16 @@ After=network-online.target pve-cluster.service
 Wants=network-online.target
 
 [Service]
-Type=oneshot
+# Not oneshot: the boot work runs once, then -- when MQTT is configured --
+# the process stays resident holding the `online` presence connection open
+# until stopped. Without MQTT it exits after the boot work; RemainAfterExit
+# keeps the unit shown as active in that case.
+Type=simple
 ExecStart=/usr/bin/python3 -m coldstandby.main
 RemainAfterExit=yes
+Restart=no
+# On stop it announces `online=false` and disconnects cleanly; give it room.
+TimeoutStopSec=30
 WorkingDirectory=/opt/coldstandby
 # All output goes to the journal; read a run with `journalctl -u coldstandby`.
 StandardOutput=journal

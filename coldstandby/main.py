@@ -9,21 +9,27 @@ Everything this controller does is logged to the systemd journal (terse
 format -- journald supplies the timestamp and the `coldstandby`
 identifier). Inspect a run with `journalctl -u coldstandby`. The one thing
 that also goes elsewhere is the resolved boot decision: after resolution
-it is handed to every mode selector's `publish_result`, and the Home
-Assistant selector writes it to a status entity.
+it is handed to every mode selector's `publish_result`.
+
+The boot work runs once. When MQTT (`mqtt_broker`) is configured, the
+process then stays resident, holding an `online` MQTT presence connection
+open until systemd stops it -- so the unit is `Type=simple`, not oneshot.
+Without MQTT it exits after the boot work as before.
 """
 from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from . import emergency, lab, replication
 from .config import DEFAULT_CONFIG_PATH, Config
 from .mode import Mode, determine_mode
-from .selectors import build_selectors
+from .selectors import MqttPresence, build_selectors
 
 log = logging.getLogger("coldstandby")
 
@@ -170,19 +176,60 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info("Boot mode: %s%s", mode.value, " (dry run)" if args.dry_run else "")
 
+    # With MQTT configured the controller does not exit after the boot work:
+    # it holds an `online` presence connection open until systemd stops it,
+    # so Home Assistant can see whether the node is up. Established before
+    # dispatch so `online` is true for the whole run (a SIGKILL mid-dispatch
+    # then trips the LWT).
+    presence: MqttPresence | None = None
+    if cfg.mqtt_enabled and not args.dry_run:
+        presence = MqttPresence(cfg)
+        presence.start()
+
     try:
-        if mode is Mode.REPLICATION:
-            return replication.run(
-                cfg, dry_run=args.dry_run, allow_shutdown=not args.no_shutdown
-            )
-        if mode is Mode.LAB:
-            return lab.run(cfg, dry_run=args.dry_run)
-        return emergency.run(cfg, dry_run=args.dry_run)
+        rc = _dispatch(mode, cfg, args)
     except Exception:
         # A non-zero exit marks the unit failed; the traceback is in the
         # journal. That is the whole failure signal -- no external sink.
         log.exception("Unhandled error while executing %s mode.", mode.value)
-        return 1
+        rc = 1
+
+    if presence is not None and presence.active:
+        if _node_stays_up(mode, rc, cfg, args):
+            log.info("MQTT online presence held -- staying up until systemd stops us.")
+            _hold_until_signalled()
+        presence.stop()
+
+    return rc
+
+
+def _hold_until_signalled() -> None:
+    """Block until SIGTERM/SIGINT, then return so the caller can shut down
+    cleanly. Signal handlers only fire in the main thread, which is where
+    `main()` runs."""
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_a: stop.set())
+    while not stop.wait(1.0):
+        pass
+
+
+def _dispatch(mode: Mode, cfg: Config, args: argparse.Namespace) -> int:
+    if mode is Mode.REPLICATION:
+        return replication.run(
+            cfg, dry_run=args.dry_run, allow_shutdown=not args.no_shutdown
+        )
+    if mode is Mode.LAB:
+        return lab.run(cfg, dry_run=args.dry_run)
+    return emergency.run(cfg, dry_run=args.dry_run)
+
+
+def _node_stays_up(mode: Mode, rc: int, cfg: Config, args: argparse.Namespace) -> bool:
+    """Whether the node remains powered on after this run -- i.e. whether we
+    should hold the MQTT presence open. Only a *successful* Replication that
+    is allowed to power off does not."""
+    replication_powers_off = cfg.shutdown_after_replication and not args.no_shutdown
+    return not (mode is Mode.REPLICATION and rc == 0 and replication_powers_off)
 
 
 if __name__ == "__main__":

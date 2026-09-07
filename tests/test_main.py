@@ -149,3 +149,90 @@ def test_exercise_selectors_without_dry_run_errors(tmp_path):
 
     with pytest.raises(SystemExit):
         main_mod.main(["--config", str(_cfg_file(tmp_path)), "--exercise-selectors"])
+
+
+# --- MQTT online presence / stay-resident ---------------------------
+
+class _FakePresence:
+    instances = []
+
+    def __init__(self, cfg):
+        self.started = False
+        self.stopped = False
+        _FakePresence.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    @property
+    def active(self):
+        return self.started
+
+
+def _mqtt_cfg_file(tmp_path, **extra):
+    import json as _json
+    p = tmp_path / "config.json"
+    p.write_text(_json.dumps({
+        "dongle_marker_token": "s", "mqtt_broker": "mqtt.lan", "node_name": "n",
+        **extra,
+    }))
+    return p
+
+
+def _patched_mqtt_main(monkeypatch, mode, rc=0):
+    _FakePresence.instances.clear()
+    monkeypatch.setattr(main_mod, "_enforce_pve_guests_masked", lambda dry_run: None)
+    monkeypatch.setattr(main_mod, "build_selectors", lambda cfg: [])
+    monkeypatch.setattr(main_mod, "determine_mode", lambda selectors, *, dry_run: mode)
+    monkeypatch.setattr(main_mod, "MqttPresence", _FakePresence)
+    held = []
+    monkeypatch.setattr(main_mod, "_hold_until_signalled", lambda: held.append(True))
+    monkeypatch.setattr(main_mod, "_dispatch", lambda m, c, a: rc)
+    return held
+
+
+def test_mqtt_lab_holds_presence_until_signalled(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.LAB)
+    assert main_mod.main(["--config", str(_mqtt_cfg_file(tmp_path))]) == 0
+
+    pres = _FakePresence.instances[0]
+    assert pres.started and pres.stopped
+    assert held == [True]  # it waited for the stop signal
+
+
+def test_mqtt_replication_with_shutdown_does_not_hold(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.REPLICATION, rc=0)
+    main_mod.main(["--config", str(_mqtt_cfg_file(tmp_path))])
+
+    pres = _FakePresence.instances[0]
+    assert pres.started and pres.stopped     # online announced then cleared
+    assert held == []                        # no wait -- node is powering off
+
+
+def test_mqtt_failed_replication_still_holds(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.REPLICATION, rc=1)
+    main_mod.main(["--config", str(_mqtt_cfg_file(tmp_path))])
+    assert held == [True]  # replication failed -> node stays up -> hold
+
+
+def test_mqtt_replication_no_shutdown_holds(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.REPLICATION, rc=0)
+    main_mod.main(["--config", str(_mqtt_cfg_file(tmp_path)), "--no-shutdown"])
+    assert held == [True]
+
+
+def test_dry_run_never_holds_presence(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.LAB)
+    main_mod.main(["--config", str(_mqtt_cfg_file(tmp_path)), "--dry-run"])
+    assert _FakePresence.instances == []  # no presence at all under --dry-run
+    assert held == []
+
+
+def test_no_mqtt_no_presence(monkeypatch, tmp_path):
+    held = _patched_mqtt_main(monkeypatch, main_mod.Mode.LAB)
+    main_mod.main(["--config", str(_cfg_file(tmp_path))])  # ha_* config, no mqtt
+    assert _FakePresence.instances == []
+    assert held == []

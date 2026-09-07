@@ -44,20 +44,35 @@ class FakeClient:
         self.connect_error = connect_error
         self.publish_ok = publish_ok
         self.on_message = None
+        self.on_connect = None
+        self.on_disconnect = None
         self.published = []                 # (topic, payload, retain)
+        self.will = None                    # (topic, payload, retain)
+        self.loop_running = False
+        self.disconnected = False
+
+    def will_set(self, topic, payload, qos=0, retain=False):
+        self.will = (topic, payload, retain)
 
     def connect(self, host, port, keepalive=60):
         if self.connect_error:
             raise self.connect_error
 
+    def connect_async(self, host, port, keepalive=60):
+        if self.connect_error:
+            raise self.connect_error
+
     def loop_start(self):
-        pass
+        self.loop_running = True
 
     def loop_stop(self):
-        pass
+        self.loop_running = False
 
     def disconnect(self):
-        pass
+        self.disconnected = True
+
+    def fire_connected(self, reason_code=0):
+        self.on_connect(self, None, {}, reason_code, None)
 
     def subscribe(self, topic, qos=0):
         payload = self.retained.get(topic) if isinstance(self.retained, dict) else self.retained
@@ -171,9 +186,14 @@ def test_publish_result_writes_discovery_and_last_boot(monkeypatch):
     for comp in disc["cmps"].values():
         assert "availability" not in comp and "avty" not in comp
     assert set(disc["cmps"]) == {
-        "next_boot_mode", "last_boot_mode", "last_boot_decided_by",
+        "next_boot_mode", "online", "last_boot_mode", "last_boot_decided_by",
         "last_boot_host", "last_boot_at", "last_boot_selectors",
     }
+    online = disc["cmps"]["online"]
+    assert online["p"] == "binary_sensor"
+    assert online["device_class"] == "connectivity"
+    assert online["state_topic"] == "pve-coldstandby/standby01/online"
+    assert (online["payload_on"], online["payload_off"]) == ("true", "false")
 
     base = "pve-coldstandby/standby01"
     assert by_topic[f"{base}/last_boot_mode"] == ("lab", True)
@@ -210,3 +230,63 @@ def test_missing_paho_is_selector_unavailable(monkeypatch):
     monkeypatch.setattr(mqtt_ha, "mqtt", None)
     with pytest.raises(ModeSelectorUnavailable):
         MqttHaSelector(_cfg()).mode_requested()
+
+
+# --- MqttPresence ------------------------------------------------------
+
+from coldstandby.selectors.mqtt_ha import MqttPresence  # noqa: E402
+
+
+def _presence(monkeypatch, client):
+    monkeypatch.setattr(mqtt_ha, "_build_client", lambda cfg: client)
+    return MqttPresence(_cfg())
+
+
+def test_presence_sets_lwt_and_publishes_online(monkeypatch):
+    client = FakeClient()
+    p = _presence(monkeypatch, client)
+    p.start()
+
+    assert client.will == ("pve-coldstandby/standby01/online", "false", True)
+    assert client.loop_running is True
+    assert p.active is True
+
+    client.fire_connected()  # broker accepts the connection
+    assert ("pve-coldstandby/standby01/online", "true", True) in client.published
+
+
+def test_presence_connect_refused_does_not_publish_online(monkeypatch):
+    client = FakeClient()
+    p = _presence(monkeypatch, client)
+    p.start()
+    client.fire_connected(reason_code=1)  # non-zero -> failure
+    assert not any(t.endswith("/online") and pl == "true" for t, pl, _ in client.published)
+
+
+def test_presence_stop_marks_offline_and_disconnects(monkeypatch):
+    client = FakeClient()
+    p = _presence(monkeypatch, client)
+    p.start()
+    p.stop()
+
+    assert ("pve-coldstandby/standby01/online", "false", True) in client.published
+    assert client.disconnected is True
+    assert client.loop_running is False
+    assert p.active is False
+    p.stop()  # idempotent
+
+
+def test_presence_without_paho_is_inert(monkeypatch):
+    monkeypatch.setattr(mqtt_ha, "mqtt", None)
+    p = MqttPresence(_cfg())
+    p.start()
+    assert p.active is False
+    p.stop()  # must not raise
+
+
+def test_presence_connect_error_leaves_it_inactive(monkeypatch):
+    client = FakeClient(connect_error=ValueError("bad host"))
+    monkeypatch.setattr(mqtt_ha, "_build_client", lambda cfg: client)
+    p = MqttPresence(_cfg())
+    p.start()
+    assert p.active is False

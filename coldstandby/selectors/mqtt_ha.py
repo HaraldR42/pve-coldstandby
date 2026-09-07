@@ -6,8 +6,7 @@ configured. It needs the ``mqtt`` extra::
 
     apt install python3-paho-mqtt
 
-Topic tree -- everything under ``<project>/<node>`` (override with
-``mqtt_base_topic``):
+Topic tree -- everything under ``<mqtt_base_topic>/<node>``:
 
 ===================== ======== =================================================
 topic                 retained meaning
@@ -20,16 +19,26 @@ last_boot_decided_by  yes      |  the resolved `ModeDecision`, one value per
 last_boot_host        yes      |  topic, published on every non-dry boot
 last_boot_at          yes      |
 last_boot_selectors   yes      /  (JSON: selector class name -> contribution)
+online                yes      "true" while the node is up. `MqttPresence`
+                               publishes it on start and, on a clean stop,
+                               "false"; if the process just vanishes the
+                               broker publishes "false" via the LWT.
 ===================== ======== =================================================
+
+When ``mqtt_broker`` is set the controller does not exit after the boot
+work: it holds an `MqttPresence` connection open (marking ``online``) until
+systemd stops it. See main.py.
 
 Home Assistant MQTT **device** discovery is published (once per boot, before
 the last_boot_* values) to
 ``<discovery_prefix>/device/<node-id>/config`` -- one device carrying a
-``select`` (replication / lab only; Emergency is never remotely selectable)
-and a ``sensor`` per last_boot_* value. The components carry **no
-availability topic on purpose**: the select must stay operable while the
-backup node -- the very thing that publishes this -- is powered off, which
-is exactly when you set it.
+``select`` (replication / lab only; Emergency is never remotely selectable),
+a ``sensor`` per last_boot_* value, and an ``online`` connectivity
+``binary_sensor``. The components carry **no availability topic on
+purpose**: the select must stay operable while the backup node -- the very
+thing that publishes this -- is powered off, which is exactly when you set
+it. (``online`` is a plain binary_sensor, *not* wired as availability, for
+the same reason.)
 """
 from __future__ import annotations
 
@@ -78,6 +87,22 @@ def _version() -> str:
         return version("pve-coldstandby")
     except Exception:  # noqa: BLE001 - version string is cosmetic
         return "0.0.0"
+
+
+def _build_client(cfg: Config) -> mqtt.Client:
+    client = mqtt.Client(
+        CallbackAPIVersion.VERSION2,
+        client_id=f"{PROJECT_NAME}-{cfg.node}-{os.getpid()}",
+    )
+    if cfg.mqtt_username:
+        client.username_pw_set(cfg.mqtt_username, cfg.mqtt_password or None)
+    if cfg.mqtt_tls:
+        client.tls_set(ca_certs=cfg.mqtt_tls_ca_cert or None)
+    return client
+
+
+def _reason_is_failure(reason_code) -> bool:
+    return bool(getattr(reason_code, "is_failure", reason_code))
 
 
 class MqttHaSelector(ModeSelector):
@@ -202,15 +227,7 @@ class MqttHaSelector(ModeSelector):
             log.debug("MQTT %s disconnected.", target)
 
     def _make_client(self) -> mqtt.Client:
-        client = mqtt.Client(
-            CallbackAPIVersion.VERSION2,
-            client_id=f"{PROJECT_NAME}-{self._cfg.node}-{os.getpid()}",
-        )
-        if self._cfg.mqtt_username:
-            client.username_pw_set(self._cfg.mqtt_username, self._cfg.mqtt_password or None)
-        if self._cfg.mqtt_tls:
-            client.tls_set(ca_certs=self._cfg.mqtt_tls_ca_cert or None)
-        return client
+        return _build_client(self._cfg)
 
     @staticmethod
     def _require_paho() -> None:
@@ -268,6 +285,16 @@ class MqttHaSelector(ModeSelector):
                     "retain": True,
                     "icon": "mdi:restart",
                 },
+                "online": {
+                    "p": "binary_sensor",
+                    "name": "Online",
+                    "state_topic": f"{base}/online",
+                    "unique_id": f"{node_id}_online",
+                    "object_id": f"{node_id}_online",
+                    "device_class": "connectivity",
+                    "payload_on": "true",
+                    "payload_off": "false",
+                },
                 "last_boot_mode": sensor("last_boot_mode", "Last boot mode", icon="mdi:cog"),
                 "last_boot_decided_by": sensor("last_boot_decided_by", "Last boot decided by"),
                 "last_boot_host": sensor("last_boot_host", "Last boot host"),
@@ -278,3 +305,67 @@ class MqttHaSelector(ModeSelector):
             },
             # No "avty"/"availability" key -- see the module docstring.
         }
+
+
+class MqttPresence:
+    """Holds an MQTT connection that marks this node ``online`` for as long
+    as the process runs.
+
+    The connection carries a Last Will and Testament, so if the process
+    just vanishes -- crash, ``kill -9``, power cut -- the broker publishes
+    ``online = "false"`` (retained) on our behalf. On a clean ``stop()`` we
+    publish it ourselves first. ``connect_async`` + a background loop means
+    a broker that is briefly down at boot (or restarts later) is retried
+    automatically; ``online = "true"`` is re-published on every reconnect.
+    """
+
+    def __init__(self, cfg: Config):
+        self._cfg = cfg
+        self._topic = f"{cfg.mqtt_topic_base}/online"
+        self._client: mqtt.Client | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._client is not None
+
+    def start(self) -> None:
+        if mqtt is None:
+            log.warning("paho-mqtt not installed -- no MQTT online presence.")
+            return
+        client = _build_client(self._cfg)
+        client.will_set(self._topic, "false", qos=1, retain=True)
+        client.on_connect = self._on_connect
+        client.on_disconnect = self._on_disconnect
+        try:
+            client.connect_async(self._cfg.mqtt_broker, self._cfg.mqtt_port, keepalive=60)
+        except (OSError, ValueError) as exc:
+            log.warning("MQTT online presence: %s -- no presence held.", exc)
+            return
+        client.loop_start()
+        self._client = client
+        log.info(
+            "MQTT online presence: connecting to %s:%d in the background.",
+            self._cfg.mqtt_broker, self._cfg.mqtt_port,
+        )
+
+    def stop(self) -> None:
+        client, self._client = self._client, None
+        if client is None:
+            return
+        log.info("MQTT: marking offline at %s and disconnecting.", self._topic)
+        with contextlib.suppress(Exception):
+            info = client.publish(self._topic, "false", qos=1, retain=True)
+            info.wait_for_publish(self._cfg.mqtt_timeout_seconds)
+        with contextlib.suppress(Exception):
+            client.loop_stop()
+            client.disconnect()
+
+    def _on_connect(self, client, _userdata, _flags, reason_code, _properties) -> None:
+        if _reason_is_failure(reason_code):
+            log.warning("MQTT online presence: broker refused connection (%s).", reason_code)
+            return
+        client.publish(self._topic, "true", qos=1, retain=True)
+        log.info("MQTT: marked online at %s.", self._topic)
+
+    def _on_disconnect(self, *_args) -> None:
+        log.info("MQTT online presence: disconnected from broker (will retry).")
