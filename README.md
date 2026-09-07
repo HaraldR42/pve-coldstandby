@@ -403,9 +403,17 @@ tests/
    Emergency dongle is the one that matters; the others are conveniences.
 4. `systemctl mask pve-guests.service` (the controller also re-asserts
    this itself on every run, but mask it now so the first boot is clean)
-5. Install to `/opt/coldstandby`, copy `systemd/coldstandby.service` to
-   `/etc/systemd/system/`, `systemctl daemon-reload && systemctl enable
-   coldstandby.service`.
+5. Make the `coldstandby` package importable, then install the unit:
+   - Simplest: put the repo at `/opt/pve-coldstandby` (so
+     `/opt/pve-coldstandby/coldstandby/` exists) — that path is the unit's
+     `WorkingDirectory`. For the MQTT selector also
+     `apt install python3-paho-mqtt` (or `pip install
+     pve-coldstandby[mqtt]`).
+   - Or `pip install` it (system or a venv); then point `ExecStart` at
+     that interpreter and delete the `WorkingDirectory=` line.
+
+   Then `cp systemd/coldstandby.service /etc/systemd/system/`,
+   `systemctl daemon-reload && systemctl enable coldstandby.service`.
 6. Before trusting an unattended boot:
    `python3 -m coldstandby.main --config /etc/coldstandby/config.json --dry-run -v`
    (`--force-mode {replication,lab,emergency}` to exercise one path,

@@ -17,7 +17,12 @@ RemainAfterExit=yes
 Restart=no
 # On stop it announces `online=false` and disconnects cleanly; give it room.
 TimeoutStopSec=30
-WorkingDirectory=/opt/coldstandby
+# The `coldstandby` package must be importable. This assumes the repo is
+# checked out at /opt/pve-coldstandby (so /opt/pve-coldstandby/coldstandby/
+# exists). If you instead `pip install` it (into the system or a venv),
+# point ExecStart at that interpreter / the `coldstandby` entry point and
+# delete this line.
+WorkingDirectory=/opt/pve-coldstandby
 # All output goes to the journal; read a run with `journalctl -u coldstandby`.
 StandardOutput=journal
 StandardError=journal
