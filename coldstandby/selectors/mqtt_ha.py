@@ -39,16 +39,25 @@ import logging
 import os
 import threading
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from ..config import PROJECT_NAME, Config
 from ..mode import Mode, ModeDecision, ModeSelector, ModeSelectorUnavailable
 
-try:  # the one optional dependency in the project
+if TYPE_CHECKING:
+    # For the type checker paho is always present, so `mqtt.Client` and
+    # `CallbackAPIVersion` resolve. At runtime it is the one optional
+    # dependency: absent, `mqtt` is None and every code path that needs it
+    # goes through `_require_paho()` first.
     import paho.mqtt.client as mqtt
     from paho.mqtt.enums import CallbackAPIVersion
-except ImportError:  # pragma: no cover - exercised via _require_paho
-    mqtt = None
-    CallbackAPIVersion = None
+else:
+    try:
+        import paho.mqtt.client as mqtt
+        from paho.mqtt.enums import CallbackAPIVersion
+    except ImportError:  # pragma: no cover - exercised via _require_paho
+        mqtt = None
+        CallbackAPIVersion = None
 
 log = logging.getLogger(__name__)
 
@@ -160,7 +169,7 @@ class MqttHaSelector(ModeSelector):
                 )
         return got.get("payload")
 
-    def _publish(self, client, topic: str, payload: str, *, retain: bool) -> None:
+    def _publish(self, client: mqtt.Client, topic: str, payload: str, *, retain: bool) -> None:
         log.debug("MQTT publish %s (retain=%s, %d bytes).", topic, retain, len(payload))
         info = client.publish(topic, payload, qos=1, retain=retain)
         info.wait_for_publish(self._cfg.mqtt_timeout_seconds)
@@ -168,7 +177,7 @@ class MqttHaSelector(ModeSelector):
             raise ModeSelectorUnavailable(f"MQTT publish to {topic} not confirmed")
 
     @contextlib.contextmanager
-    def _connection(self) -> Iterator["mqtt.Client"]:
+    def _connection(self) -> Iterator[mqtt.Client]:
         self._require_paho()
         client = self._make_client()
         target = f"{self._cfg.mqtt_broker}:{self._cfg.mqtt_port}"
@@ -192,7 +201,7 @@ class MqttHaSelector(ModeSelector):
                 client.disconnect()
             log.debug("MQTT %s disconnected.", target)
 
-    def _make_client(self):
+    def _make_client(self) -> mqtt.Client:
         client = mqtt.Client(
             CallbackAPIVersion.VERSION2,
             client_id=f"{PROJECT_NAME}-{self._cfg.node}-{os.getpid()}",
