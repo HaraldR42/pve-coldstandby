@@ -17,7 +17,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 from .config import Config
@@ -41,7 +41,7 @@ def _is_mounted(mount_point: Path) -> bool:
 
 
 @contextlib.contextmanager
-def mounted_backup_share(cfg: Config, dry_run: bool = False) -> Iterator[Path]:
+def mounted_backup_share(cfg: Config, dry_run: bool = False) -> Generator[Path, None, None]:
     """Yield the path at which the backup share is mounted read-only."""
     target = cfg.nfs_mount_point
     source = f"{cfg.nfs_server}:{cfg.nfs_export}"

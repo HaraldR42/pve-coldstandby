@@ -38,7 +38,7 @@ import json
 import logging
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import TYPE_CHECKING
 
 from ..config import PROJECT_NAME, Config
@@ -177,7 +177,7 @@ class MqttHaSelector(ModeSelector):
             raise ModeSelectorUnavailable(f"MQTT publish to {topic} not confirmed")
 
     @contextlib.contextmanager
-    def _connection(self) -> Iterator[mqtt.Client]:
+    def _connection(self) -> Generator[mqtt.Client, None, None]:
         self._require_paho()
         client = self._make_client()
         target = f"{self._cfg.mqtt_broker}:{self._cfg.mqtt_port}"
