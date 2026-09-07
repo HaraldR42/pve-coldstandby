@@ -37,11 +37,12 @@ def test_mqtt_topic_base(tmp_path):
     assert cfg.mqtt_enabled is True
     assert cfg.mqtt_topic_base == "pve-coldstandby/spare"
 
+    # the node name is always appended, even to a custom base
     cfg2 = Config.load(_write(tmp_path, {
-        "dongle_marker_token": "s", "mqtt_broker": "m",
-        "mqtt_base_topic": "homelab/coldstandby",
+        "dongle_marker_token": "s", "mqtt_broker": "m", "node_name": "spare",
+        "mqtt_base_topic": "homelab/coldstandby/",
     }))
-    assert cfg2.mqtt_topic_base == "homelab/coldstandby"
+    assert cfg2.mqtt_topic_base == "homelab/coldstandby/spare"
 
 
 def test_online_selector_enabled_when_both_set(tmp_path):

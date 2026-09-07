@@ -271,7 +271,10 @@ stdlib). Configure `mqtt_broker` to enable it; leaving it empty falls back
 to the legacy REST `HomeAssistantSelector` if `ha_base_url`/`ha_token` are
 set, or to no online selector at all.
 
-**Topics**, all under `<mqtt_base_topic>` (default `pve-coldstandby/<node_name or hostname>`):
+**Topics**, all under `<mqtt_base_topic>/<node>` — the node name
+(`node_name`, or the hostname) is always appended, so several nodes can
+share one broker without colliding. `mqtt_base_topic` defaults to
+`pve-coldstandby`, giving `pve-coldstandby/<node>/…`:
 
 | topic | retained | meaning |
 |---|---|---|

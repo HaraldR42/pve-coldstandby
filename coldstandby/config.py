@@ -47,7 +47,10 @@ class Config:
     mqtt_tls: bool = False
     mqtt_tls_ca_cert: str = ""  # path to a CA bundle; empty = system trust store
     mqtt_timeout_seconds: float = 10.0
-    mqtt_base_topic: str = ""  # default: "pve-coldstandby/<node_name>"
+    # The node name is always appended, so the topic tree is
+    # "<mqtt_base_topic>/<node>". Empty -> base defaults to the project
+    # name, i.e. "pve-coldstandby/<node>".
+    mqtt_base_topic: str = ""
     mqtt_discovery: bool = True
     mqtt_discovery_prefix: str = "homeassistant"
 
@@ -200,7 +203,11 @@ class Config:
 
     @property
     def mqtt_topic_base(self) -> str:
-        return self.mqtt_base_topic or f"{PROJECT_NAME}/{self.node}"
+        """The MQTT topic tree root: ``<mqtt_base_topic>/<node>``. The node
+        name is always appended so per-node topics never collide when
+        several nodes share a broker."""
+        base = self.mqtt_base_topic.strip("/") or PROJECT_NAME
+        return f"{base}/{self.node}"
 
     def orphan_vmid_bounds(self) -> tuple[int, int] | None:
         """Parse ``standby_vmid_range`` into an inclusive (low, high) pair,
