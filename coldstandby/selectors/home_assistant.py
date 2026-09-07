@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Optional
 
 from ..config import Config
 from ..mode import Mode, ModeDecision, ModeSelector, ModeSelectorUnavailable
@@ -83,7 +82,7 @@ class HomeAssistantSelector(ModeSelector):
                 f"unexpected response for {self._cfg.ha_lab_select_entity}: {result!r}"
             ) from exc
 
-    def _request(self, method: str, path: str, body: Optional[dict] = None) -> dict:
+    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         url = f"{self._cfg.ha_base_url.rstrip('/')}{path}"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)

@@ -38,7 +38,7 @@ import json
 import logging
 import os
 import threading
-from typing import Iterator
+from collections.abc import Iterator
 
 from ..config import PROJECT_NAME, Config
 from ..mode import Mode, ModeDecision, ModeSelector, ModeSelectorUnavailable

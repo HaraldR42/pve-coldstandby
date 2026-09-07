@@ -32,7 +32,7 @@ import datetime as dt
 import enum
 import logging
 import socket
-from typing import Sequence
+from collections.abc import Sequence
 
 log = logging.getLogger(__name__)
 

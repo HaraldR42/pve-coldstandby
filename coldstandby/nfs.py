@@ -17,8 +17,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from .config import Config
 
