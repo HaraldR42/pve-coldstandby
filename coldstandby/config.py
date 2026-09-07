@@ -205,8 +205,10 @@ class Config:
     def mqtt_topic_base(self) -> str:
         """The MQTT topic tree root: ``<mqtt_base_topic>/<node>``. The node
         name is always appended so per-node topics never collide when
-        several nodes share a broker."""
-        base = self.mqtt_base_topic.strip("/") or PROJECT_NAME
+        several nodes share a broker. A trailing ``/`` is dropped (so it
+        doesn't produce an empty level); a *leading* ``/`` is kept -- it's
+        a legal, meaningful MQTT topic prefix."""
+        base = self.mqtt_base_topic.rstrip("/") or PROJECT_NAME
         return f"{base}/{self.node}"
 
     def orphan_vmid_bounds(self) -> tuple[int, int] | None:
